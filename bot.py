@@ -2,6 +2,7 @@ import os
 import logging
 import threading
 import time
+import socket
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update
 from telegram.ext import (
@@ -20,52 +21,109 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class HealthCheckHandler(BaseHTTPRequestHandler):
-    """HTTP handler for health checks and monitoring"""
+    """Enhanced HTTP handler for health checks and monitoring"""
+    
+    # Add server version identification
+    server_version = "TelegramQuizBot/1.0"
+    
     def do_GET(self):
         try:
-            if self.path == '/health' or self.path == '/':
-                self.send_response(200)
-                self.send_header('Content-type', 'text/html')
-                self.end_headers()
-                
-                # Create simple status page
+            start_time = time.time()
+            client_ip = self.client_address[0]
+            
+            # Handle all valid endpoints
+            if self.path in ['/', '/health', '/status']:
+                # Create response content
                 status = "🟢 Bot is running"
+                uptime = time.time() - self.server.start_time
+                hostname = socket.gethostname()
+                
                 response = f"""
-                <html>
-                <head><title>Quiz Bot Status</title></head>
+                <!DOCTYPE html>
+                <html lang="en">
+                <head>
+                    <meta charset="UTF-8">
+                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                    <title>Quiz Bot Status</title>
+                    <style>
+                        body {{ font-family: Arial, sans-serif; margin: 20px; }}
+                        .container {{ max-width: 800px; margin: 0 auto; }}
+                        .status {{ font-size: 1.5em; font-weight: bold; color: #2ecc71; }}
+                        .info {{ margin-top: 20px; padding: 15px; background-color: #f8f9fa; border-radius: 5px; }}
+                    </style>
+                </head>
                 <body>
-                    <h1>Telegram Quiz Bot Status</h1>
-                    <p>{status}</p>
-                    <p>Uptime: {time.time() - self.server.start_time:.2f} seconds</p>
-                    <p>Version: 1.1</p>
+                    <div class="container">
+                        <h1>Telegram Quiz Bot Status</h1>
+                        <div class="status">{status}</div>
+                        
+                        <div class="info">
+                            <p><strong>Hostname:</strong> {hostname}</p>
+                            <p><strong>Uptime:</strong> {uptime:.2f} seconds</p>
+                            <p><strong>Version:</strong> 1.2</p>
+                            <p><strong>Last Check:</strong> {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}</p>
+                            <p><strong>Client IP:</strong> {client_ip}</p>
+                        </div>
+                        
+                        <p style="margin-top: 30px;">
+                            <a href="https://t.me/{os.getenv('BOT_USERNAME', 'your_bot')}" target="_blank">
+                                Contact the bot on Telegram
+                            </a>
+                        </p>
+                    </div>
                 </body>
                 </html>
                 """.encode('utf-8')
                 
+                # Send response
+                self.send_response(200)
+                self.send_header('Content-type', 'text/html')
+                self.send_header('Content-Length', str(len(response)))
+                self.end_headers()
                 self.wfile.write(response)
-                logger.info("Health check passed")
+                
+                # Log successful request
+                duration = (time.time() - start_time) * 1000
+                logger.info(f"Health check from {client_ip} - 200 OK - {duration:.2f}ms")
             else:
                 self.send_response(404)
+                self.send_header('Content-type', 'text/plain')
                 self.end_headers()
+                self.wfile.write(b'404 Not Found')
+                logger.warning(f"Invalid path requested: {self.path}")
+                
         except Exception as e:
             logger.error(f"Health check error: {e}")
             self.send_response(500)
+            self.send_header('Content-type', 'text/plain')
             self.end_headers()
+            self.wfile.write(b'500 Internal Server Error')
+
+    def log_message(self, format, *args):
+        """Override to prevent default logging"""
+        pass
 
 def run_http_server(port=8080):
     """Run HTTP server in a separate thread"""
-    server_address = ('', port)
-    httpd = HTTPServer(server_address, HealthCheckHandler)
-    
-    # Add start time to server instance
-    httpd.start_time = time.time()
-    
-    logger.info(f"HTTP server running on port {port}")
-    logger.info("Endpoints available:")
-    logger.info(f"  http://localhost:{port}/")
-    logger.info(f"  http://localhost:{port}/health")
-    
-    httpd.serve_forever()
+    try:
+        server_address = ('0.0.0.0', port)
+        httpd = HTTPServer(server_address, HealthCheckHandler)
+        
+        # Add start time to server instance
+        httpd.start_time = time.time()
+        
+        logger.info(f"HTTP server running on port {port}")
+        logger.info(f"Access URLs:")
+        logger.info(f"  http://localhost:{port}/")
+        logger.info(f"  http://localhost:{port}/health")
+        logger.info(f"  http://localhost:{port}/status")
+        
+        httpd.serve_forever()
+    except Exception as e:
+        logger.critical(f"Failed to start HTTP server: {e}")
+        # Attempt to restart after delay
+        time.sleep(5)
+        run_http_server(port)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send welcome message and instructions"""
@@ -203,7 +261,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                         type='quiz',
                         correct_option_id=correct_id,
                         is_anonymous=False,
-                        open_period=10  # 10-second quiz (removed explanation)
+                        open_period=10  # 10-second quiz
                     )
                 except Exception as e:
                     logger.error(f"Poll send error: {str(e)}")
@@ -219,11 +277,12 @@ def main() -> None:
     """Run the bot and HTTP server"""
     # Get port from environment (Render provides this)
     PORT = int(os.environ.get('PORT', 8080))
+    logger.info(f"Starting HTTP server on port {PORT}")
     
     # Start HTTP server in a daemon thread
     http_thread = threading.Thread(target=run_http_server, args=(PORT,), daemon=True)
     http_thread.start()
-    logger.info(f"Started HTTP server on port {PORT}")
+    logger.info(f"HTTP server thread started")
     
     # Get token from environment
     TOKEN = os.getenv('TELEGRAM_TOKEN')
@@ -241,8 +300,14 @@ def main() -> None:
     application.add_handler(MessageHandler(filters.Document.TEXT, handle_document))
     
     # Start polling
-    logger.info("Starting bot in polling mode...")
-    application.run_polling()
+    logger.info("Starting Telegram bot in polling mode...")
+    try:
+        application.run_polling()
+    except Exception as e:
+        logger.critical(f"Telegram bot failed: {e}")
+        # Attempt to restart after delay
+        time.sleep(10)
+        main()
 
 if __name__ == '__main__':
     main()
