@@ -1,6 +1,6 @@
 services:
-  - type: web
-    name: quiz-bot
+  - type: background_worker
+    name: telegram-quiz-bot
     env: python
     buildCommand: |
       pip install --upgrade pip
@@ -8,4 +8,4 @@ services:
     startCommand: python bot.py
     envVars:
       - key: TELEGRAM_TOKEN
-        value: your_bot_token
+        value: your_bot_token_here
