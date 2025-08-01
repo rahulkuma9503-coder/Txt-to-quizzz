@@ -61,7 +61,7 @@ async def create_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         parse_mode='Markdown'
     )
 
-def parse_quiz_file(content: str) -> tuple[list, list]:
+def parse_quiz_file(content: str) -> tuple:
     """Parse and validate quiz content"""
     blocks = [b.strip() for b in content.split('\n\n') if b.strip()]
     valid_questions = []
@@ -120,7 +120,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     
     try:
         # Download file
-        file = await update.message.document.get_file()
+        file = await context.bot.get_file(update.message.document.file_id)
         await file.download_to_drive('quiz.txt')
         
         with open('quiz.txt', 'r', encoding='utf-8') as f:
@@ -135,15 +135,13 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             if len(errors) > 5:
                 error_msg += f"\n\n...and {len(errors)-5} more errors"
             await update.message.reply_text(
-                f"⚠️ Found {len(errors)} error(s):\n\n{error_msg}",
-                parse_mode='Markdown'
+                f"⚠️ Found {len(errors)} error(s):\n\n{error_msg}"
             )
         
         # Send quizzes
         if valid_questions:
             await update.message.reply_text(
-                f"✅ Sending {len(valid_questions)} quiz question(s)...",
-                parse_mode='Markdown'
+                f"✅ Sending {len(valid_questions)} quiz question(s)..."
             )
             for question, options, correct_id in valid_questions:
                 try:
@@ -155,8 +153,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                         correct_option_id=correct_id,
                         is_anonymous=False,
                         open_period=10,  # 10-second quiz
-                        explanation="Check /help for formatting",
-                        parse_mode='Markdown'
+                        explanation="Check /help for formatting"
                     )
                 except Exception as e:
                     logger.error(f"Poll send error: {str(e)}")
