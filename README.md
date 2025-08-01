@@ -15,3 +15,12 @@ A bot that converts text files into interactive Telegram quizzes
    ```bash
    git clone https://github.com/your-username/telegram-quiz-bot.git
    cd telegram-quiz-bot
+# Telegram Quiz Bot Deployment
+
+## Deployment Steps on Render.com
+
+1. **Create a new Background Worker service**
+2. **Connect your repository**
+3. **Set environment variables:**
+   - `TELEGRAM_TOKEN`: Your bot token from @BotFather
+4. **Set build commands:**
