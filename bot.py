@@ -1,6 +1,7 @@
 import os
 import logging
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update
 from telegram.ext import (
@@ -11,14 +12,6 @@ from telegram.ext import (
     ContextTypes
 )
 
-# Verify library version
-try:
-    import telegram
-    if telegram.__version__ < "20.0":
-        raise RuntimeError(f"Outdated python-telegram-bot version: {telegram.__version__}. Required >=20.0")
-except ImportError:
-    pass
-
 # Configure logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -27,22 +20,51 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class HealthCheckHandler(BaseHTTPRequestHandler):
-    """Simple HTTP handler for health checks"""
+    """HTTP handler for health checks and monitoring"""
     def do_GET(self):
-        if self.path == '/health':
-            self.send_response(200)
-            self.send_header('Content-type', 'text/plain')
-            self.end_headers()
-            self.wfile.write(b'OK')
-        else:
-            self.send_response(404)
+        try:
+            if self.path == '/health' or self.path == '/':
+                self.send_response(200)
+                self.send_header('Content-type', 'text/html')
+                self.end_headers()
+                
+                # Create simple status page
+                status = "🟢 Bot is running"
+                response = f"""
+                <html>
+                <head><title>Quiz Bot Status</title></head>
+                <body>
+                    <h1>Telegram Quiz Bot Status</h1>
+                    <p>{status}</p>
+                    <p>Uptime: {time.time() - self.server.start_time:.2f} seconds</p>
+                    <p>Version: 1.1</p>
+                </body>
+                </html>
+                """.encode('utf-8')
+                
+                self.wfile.write(response)
+                logger.info("Health check passed")
+            else:
+                self.send_response(404)
+                self.end_headers()
+        except Exception as e:
+            logger.error(f"Health check error: {e}")
+            self.send_response(500)
             self.end_headers()
 
 def run_http_server(port=8080):
-    """Run a simple HTTP server in a separate thread"""
+    """Run HTTP server in a separate thread"""
     server_address = ('', port)
     httpd = HTTPServer(server_address, HealthCheckHandler)
+    
+    # Add start time to server instance
+    httpd.start_time = time.time()
+    
     logger.info(f"HTTP server running on port {port}")
+    logger.info("Endpoints available:")
+    logger.info(f"  http://localhost:{port}/")
+    logger.info(f"  http://localhost:{port}/health")
+    
     httpd.serve_forever()
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -181,8 +203,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                         type='quiz',
                         correct_option_id=correct_id,
                         is_anonymous=False,
-                        open_period=10,  # 10-second quiz
-                        explanation="Check /help for formatting"
+                        open_period=10  # 10-second quiz (removed explanation)
                     )
                 except Exception as e:
                     logger.error(f"Poll send error: {str(e)}")
