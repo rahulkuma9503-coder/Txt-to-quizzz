@@ -18,8 +18,16 @@ logger = logging.getLogger(__name__)
 
 def start(update: Update, context: CallbackContext) -> None:
     update.message.reply_text(
-        "📚 Welcome to Quiz Bot!\n\n"
-        "Send me a .txt file with quiz questions in this format:\n\n"
+        "🌟 Welcome to Quiz Bot! 🌟\n\n"
+        "I turn text files into interactive quizzes!\n\n"
+        "🔹 Use /createquiz to start making quizzes\n"
+        "🔹 Use /help for formatting instructions\n\n"
+        "Let's create some fun quizzes together!"
+    )
+
+def help_command(update: Update, context: CallbackContext) -> None:
+    update.message.reply_text(
+        "📝 Quiz File Format:\n\n"
         "What is 2+2?\n"
         "A. 3\n"
         "B. 4\n"
@@ -27,9 +35,16 @@ def start(update: Update, context: CallbackContext) -> None:
         "D. 6\n"
         "Answer: 2\n\n"
         "Rules:\n"
-        "- 1 question per block separated by blank lines\n"
-        "- Exactly 4 options (A, B, C, D)\n"
-        "- Answer format: 'Answer: <1-4>'"
+        "• Separate questions with blank lines\n"
+        "• Exactly 4 options (A, B, C, D)\n"
+        "• Answer format: 'Answer: <1-4>'"
+    )
+
+def create_quiz(update: Update, context: CallbackContext) -> None:
+    update.message.reply_text(
+        "📤 Ready to create a quiz!\n\n"
+        "Please send me a .txt file with your quiz questions.\n\n"
+        "Need format help? Use /help"
     )
 
 def parse_quiz_file(content: str):
@@ -122,7 +137,7 @@ def handle_document(update: Update, context: CallbackContext) -> None:
                         type='quiz',
                         correct_option_id=correct_id,
                         is_anonymous=False,
-                        open_period=30
+                        open_period=10  # Quiz lasts 10 seconds
                     )
                 except Exception as e:
                     logger.error(f"Failed to send poll: {e}")
@@ -147,10 +162,11 @@ def main() -> None:
 
     # Register handlers
     dispatcher.add_handler(CommandHandler("start", start))
-    dispatcher.add_handler(CommandHandler("help", start))
+    dispatcher.add_handler(CommandHandler("help", help_command))
+    dispatcher.add_handler(CommandHandler("createquiz", create_quiz))
     dispatcher.add_handler(MessageHandler(Filters.document, handle_document))
     
-    # Start polling (for Render background worker)
+    # Start polling
     updater.start_polling()
     logger.info("Bot is running...")
     updater.idle()
