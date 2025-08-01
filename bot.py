@@ -1,6 +1,7 @@
 import os
 import logging
-import telegram
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -11,8 +12,12 @@ from telegram.ext import (
 )
 
 # Verify library version
-if telegram.__version__ < "20.0":
-    raise RuntimeError(f"Outdated python-telegram-bot version: {telegram.__version__}. Required >=20.0")
+try:
+    import telegram
+    if telegram.__version__ < "20.0":
+        raise RuntimeError(f"Outdated python-telegram-bot version: {telegram.__version__}. Required >=20.0")
+except ImportError:
+    pass
 
 # Configure logging
 logging.basicConfig(
@@ -20,7 +25,25 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
-logger.info(f"Using python-telegram-bot version: {telegram.__version__}")
+
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    """Simple HTTP handler for health checks"""
+    def do_GET(self):
+        if self.path == '/health':
+            self.send_response(200)
+            self.send_header('Content-type', 'text/plain')
+            self.end_headers()
+            self.wfile.write(b'OK')
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+def run_http_server(port=8080):
+    """Run a simple HTTP server in a separate thread"""
+    server_address = ('', port)
+    httpd = HTTPServer(server_address, HealthCheckHandler)
+    logger.info(f"HTTP server running on port {port}")
+    httpd.serve_forever()
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send welcome message and instructions"""
@@ -172,14 +195,22 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await update.message.reply_text("⚠️ Error processing file. Please check format and try again.")
 
 def main() -> None:
-    """Run the bot"""
+    """Run the bot and HTTP server"""
+    # Get port from environment (Render provides this)
+    PORT = int(os.environ.get('PORT', 8080))
+    
+    # Start HTTP server in a daemon thread
+    http_thread = threading.Thread(target=run_http_server, args=(PORT,), daemon=True)
+    http_thread.start()
+    logger.info(f"Started HTTP server on port {PORT}")
+    
     # Get token from environment
     TOKEN = os.getenv('TELEGRAM_TOKEN')
     if not TOKEN:
         logger.error("No TELEGRAM_TOKEN found in environment!")
         return
     
-    # Create Application
+    # Create Telegram application
     application = Application.builder().token(TOKEN).build()
     
     # Add handlers
