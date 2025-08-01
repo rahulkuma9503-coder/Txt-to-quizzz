@@ -1,5 +1,6 @@
 import os
 import logging
+import telegram
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -9,12 +10,17 @@ from telegram.ext import (
     ContextTypes
 )
 
+# Verify library version
+if telegram.__version__ < "20.0":
+    raise RuntimeError(f"Outdated python-telegram-bot version: {telegram.__version__}. Required >=20.0")
+
 # Configure logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+logger.info(f"Using python-telegram-bot version: {telegram.__version__}")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send welcome message and instructions"""
