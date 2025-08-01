@@ -24,67 +24,78 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
     """Enhanced HTTP handler for health checks and monitoring"""
     
     # Add server version identification
-    server_version = "TelegramQuizBot/1.0"
+    server_version = "TelegramQuizBot/2.0"
     
     def do_GET(self):
         try:
             start_time = time.time()
             client_ip = self.client_address[0]
+            user_agent = self.headers.get('User-Agent', 'Unknown')
+            
+            logger.info(f"Health check request: {self.path} from {client_ip} ({user_agent})")
             
             # Handle all valid endpoints
             if self.path in ['/', '/health', '/status']:
-                # Create response content
-                status = "🟢 Bot is running"
-                uptime = time.time() - self.server.start_time
-                hostname = socket.gethostname()
+                # Simple plain text response for monitoring services
+                response_text = "OK"
+                content_type = "text/plain"
                 
-                response = f"""
-                <!DOCTYPE html>
-                <html lang="en">
-                <head>
-                    <meta charset="UTF-8">
-                    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                    <title>Quiz Bot Status</title>
-                    <style>
-                        body {{ font-family: Arial, sans-serif; margin: 20px; }}
-                        .container {{ max-width: 800px; margin: 0 auto; }}
-                        .status {{ font-size: 1.5em; font-weight: bold; color: #2ecc71; }}
-                        .info {{ margin-top: 20px; padding: 15px; background-color: #f8f9fa; border-radius: 5px; }}
-                    </style>
-                </head>
-                <body>
-                    <div class="container">
-                        <h1>Telegram Quiz Bot Status</h1>
-                        <div class="status">{status}</div>
-                        
-                        <div class="info">
-                            <p><strong>Hostname:</strong> {hostname}</p>
-                            <p><strong>Uptime:</strong> {uptime:.2f} seconds</p>
-                            <p><strong>Version:</strong> 1.2</p>
-                            <p><strong>Last Check:</strong> {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}</p>
-                            <p><strong>Client IP:</strong> {client_ip}</p>
+                # Detailed HTML response for browser requests
+                if "Mozilla" in user_agent:  # Browser detection
+                    status = "🟢 Bot is running"
+                    uptime = time.time() - self.server.start_time
+                    hostname = socket.gethostname()
+                    
+                    response_text = f"""
+                    <!DOCTYPE html>
+                    <html lang="en">
+                    <head>
+                        <meta charset="UTF-8">
+                        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                        <title>Quiz Bot Status</title>
+                        <style>
+                            body {{ font-family: Arial, sans-serif; margin: 20px; }}
+                            .container {{ max-width: 800px; margin: 0 auto; }}
+                            .status {{ font-size: 1.5em; font-weight: bold; color: #2ecc71; }}
+                            .info {{ margin-top: 20px; padding: 15px; background-color: #f8f9fa; border-radius: 5px; }}
+                        </style>
+                    </head>
+                    <body>
+                        <div class="container">
+                            <h1>Telegram Quiz Bot Status</h1>
+                            <div class="status">{status}</div>
+                            
+                            <div class="info">
+                                <p><strong>Hostname:</strong> {hostname}</p>
+                                <p><strong>Uptime:</strong> {uptime:.2f} seconds</p>
+                                <p><strong>Version:</strong> 2.0</p>
+                                <p><strong>Last Check:</strong> {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}</p>
+                                <p><strong>Client IP:</strong> {client_ip}</p>
+                                <p><strong>User Agent:</strong> {user_agent}</p>
+                            </div>
+                            
+                            <p style="margin-top: 30px;">
+                                <a href="https://t.me/{os.getenv('BOT_USERNAME', 'your_bot')}" target="_blank">
+                                    Contact the bot on Telegram
+                                </a>
+                            </p>
                         </div>
-                        
-                        <p style="margin-top: 30px;">
-                            <a href="https://t.me/{os.getenv('BOT_USERNAME', 'your_bot')}" target="_blank">
-                                Contact the bot on Telegram
-                            </a>
-                        </p>
-                    </div>
-                </body>
-                </html>
-                """.encode('utf-8')
+                    </body>
+                    </html>
+                    """
+                    content_type = "text/html"
                 
                 # Send response
+                response = response_text.encode('utf-8')
                 self.send_response(200)
-                self.send_header('Content-type', 'text/html')
+                self.send_header('Content-type', content_type)
                 self.send_header('Content-Length', str(len(response)))
                 self.end_headers()
                 self.wfile.write(response)
                 
                 # Log successful request
                 duration = (time.time() - start_time) * 1000
-                logger.info(f"Health check from {client_ip} - 200 OK - {duration:.2f}ms")
+                logger.info(f"Health check passed - 200 OK - {duration:.2f}ms")
             else:
                 self.send_response(404)
                 self.send_header('Content-type', 'text/plain')
@@ -276,7 +287,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 def main() -> None:
     """Run the bot and HTTP server"""
     # Get port from environment (Render provides this)
-    PORT = int(os.environ.get('PORT', 8080))
+    PORT = int(os.environ.get('PORT', 10000))  # Default to Render's port
     logger.info(f"Starting HTTP server on port {PORT}")
     
     # Start HTTP server in a daemon thread
