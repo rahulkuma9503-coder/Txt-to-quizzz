@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: quiz-bot
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    envVars:
+      - key: TELEGRAM_TOKEN
+        value: your_bot_token
+      - key: PORT
+        value: 10000
