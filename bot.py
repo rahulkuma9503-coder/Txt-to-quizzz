@@ -145,7 +145,16 @@ def run_http_server(port=8080):
 # MongoDB connection function
 def get_db():
     try:
-        client = MongoClient(os.getenv('MONGO_URI', 'mongodb://localhost:27017'))
+        # Get MongoDB URI from environment
+        mongo_uri = os.getenv('MONGO_URI')
+        if not mongo_uri:
+            logger.error("MONGO_URI environment variable not set")
+            return None
+            
+        # Create client and test connection
+        client = MongoClient(mongo_uri)
+        client.admin.command('ping')  # Test connection
+        logger.info("MongoDB connection successful")
         return client.telegram_bot
     except Exception as e:
         logger.error(f"MongoDB connection error: {e}")
@@ -153,29 +162,32 @@ def get_db():
 
 # Record user interaction
 async def record_user_interaction(update: Update):
-    db = get_db()
-    if not db:
-        return
-        
-    user = update.effective_user
-    if not user:
-        return
-        
-    users = db.users
-    user_data = {
-        "user_id": user.id,
-        "first_name": user.first_name,
-        "last_name": user.last_name,
-        "username": user.username,
-        "last_interaction": datetime.utcnow()
-    }
-    
     try:
+        db = get_db()
+        if db is None:  # Fixed: use explicit None check
+            logger.error("Skipping user recording: MongoDB connection failed")
+            return
+            
+        user = update.effective_user
+        if not user:
+            return
+            
+        users = db.users
+        user_data = {
+            "user_id": user.id,
+            "first_name": user.first_name,
+            "last_name": user.last_name,
+            "username": user.username,
+            "last_interaction": datetime.utcnow()
+        }
+        
+        # Update or insert user record
         users.update_one(
             {"user_id": user.id},
             {"$set": user_data},
             upsert=True
         )
+        logger.info(f"Recorded interaction for user {user.id}")
     except Exception as e:
         logger.error(f"Error saving user data: {e}")
 
@@ -343,7 +355,7 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
 
     db = get_db()
-    if not db:
+    if db is None:  # Fixed: use explicit None check
         await update.message.reply_text("⚠️ Database connection error. Stats unavailable.")
         return
         
@@ -397,7 +409,7 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return
         
     db = get_db()
-    if not db:
+    if db is None:  # Fixed: use explicit None check
         await update.message.reply_text("⚠️ Database connection error. Broadcast unavailable.")
         return
         
