@@ -24,7 +24,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
     """Enhanced HTTP handler for health checks and monitoring"""
     
     # Add server version identification
-    server_version = "TelegramQuizBot/2.0"
+    server_version = "TelegramQuizBot/2.1"
     
     def do_GET(self):
         try:
@@ -68,7 +68,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
                             <div class="info">
                                 <p><strong>Hostname:</strong> {hostname}</p>
                                 <p><strong>Uptime:</strong> {uptime:.2f} seconds</p>
-                                <p><strong>Version:</strong> 2.0</p>
+                                <p><strong>Version:</strong> 2.1 (Prefix Fix)</p>
                                 <p><strong>Last Check:</strong> {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}</p>
                                 <p><strong>Client IP:</strong> {client_ip}</p>
                                 <p><strong>User Agent:</strong> {user_agent}</p>
@@ -167,7 +167,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "```\n\n"
         "📌 *Rules:*\n"
         "• One question per block (separated by blank lines)\n"
-        "• Exactly 4 options (A, B, C, D)\n"
+        "• Exactly 4 options (A, B, C, D) with prefixes\n"
         "• Answer format: 'Answer: <1-4>' (1=A, 2=B, etc.)",
         parse_mode='Markdown'
     )
@@ -226,7 +226,8 @@ def parse_quiz_file(content: str) -> tuple:
                 error_parts.append(answer_error)
             errors.append(f"❌ Q{i}: {'; '.join(error_parts)}")
         else:
-            option_texts = [opt[2:].strip() for opt in options]
+            # Keep the full option text including prefixes
+            option_texts = options  # Use the original lines with prefixes
             correct_id = int(answer_line.split(':')[1].strip()) - 1
             valid_questions.append((question, option_texts, correct_id))
     
@@ -268,7 +269,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     await context.bot.send_poll(
                         chat_id=update.effective_chat.id,
                         question=question,
-                        options=options,
+                        options=options,  # Now includes A., B., C., D. prefixes
                         type='quiz',
                         correct_option_id=correct_id,
                         is_anonymous=False,
