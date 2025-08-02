@@ -24,12 +24,12 @@ logger = logging.getLogger(__name__)
 
 # Global variables
 bot_start_time = time.time()
-BOT_VERSION = "5.2"
+BOT_VERSION = "5.2.1"  # Incremented version
 
 class HealthCheckHandler(BaseHTTPRequestHandler):
     """Enhanced HTTP handler for health checks and monitoring"""
     
-    server_version = "TelegramQuizBot/5.2"
+    server_version = "TelegramQuizBot/5.2.1"
     
     def do_GET(self):
         try:
@@ -420,12 +420,21 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             await update.message.reply_text("⚠️ No users found in database.")
             return
             
+        # Create safe confirmation message without Markdown formatting
+        display_text = broadcast_text[:300] + "..." if len(broadcast_text) > 300 else broadcast_text
+        
+        confirmation_text = (
+            f"⚠️ Broadcast Confirmation\n\n"
+            f"Recipients: {total_users} users\n\n"
+            f"Message Preview:\n"
+            f"-----------------\n"
+            f"{display_text}\n"
+            f"-----------------\n\n"
+            f"Type /confirm_broadcast to send or /cancel to abort."
+        )
+        
         confirmation = await update.message.reply_text(
-            f"⚠️ *Broadcast Confirmation*\n\n"
-            f"Recipients: `{total_users}` users\n\n"
-            f"Message:\n{broadcast_text}\n\n"
-            f"Type /confirm_broadcast to send or /cancel to abort.",
-            parse_mode='Markdown',
+            confirmation_text,
             reply_to_message_id=replied_msg.message_id
         )
         
@@ -490,12 +499,11 @@ async def confirm_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         
         # Final status report
         await status_msg.edit_text(
-            f"✅ *Broadcast Complete!*\n\n"
-            f"• Total recipients: `{total_users}`\n"
-            f"• Successfully sent: `{success}`\n"
-            f"• Failed: `{failed}`\n\n"
-            f"Message:\n{broadcast_text}",
-            parse_mode='Markdown'
+            f"✅ Broadcast Complete!\n\n"
+            f"• Total recipients: {total_users}\n"
+            f"• Successfully sent: {success}\n"
+            f"• Failed: {failed}\n\n"
+            f"Message:\n{broadcast_text}"
         )
         
         # Cleanup
