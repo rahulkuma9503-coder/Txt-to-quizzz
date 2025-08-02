@@ -3,6 +3,7 @@ import logging
 import threading
 import time
 import socket
+import re
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update
 from telegram.ext import (
@@ -24,7 +25,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
     """Enhanced HTTP handler for health checks and monitoring"""
     
     # Add server version identification
-    server_version = "TelegramQuizBot/2.1"
+    server_version = "TelegramQuizBot/3.0"
     
     def do_GET(self):
         try:
@@ -68,7 +69,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
                             <div class="info">
                                 <p><strong>Hostname:</strong> {hostname}</p>
                                 <p><strong>Uptime:</strong> {uptime:.2f} seconds</p>
-                                <p><strong>Version:</strong> 2.1 (Prefix Fix)</p>
+                                <p><strong>Version:</strong> 3.0 (Flexible Prefixes)</p>
                                 <p><strong>Last Check:</strong> {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}</p>
                                 <p><strong>Client IP:</strong> {client_ip}</p>
                                 <p><strong>User Agent:</strong> {user_agent}</p>
@@ -153,10 +154,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "📝 *Quiz File Format Guide:*\n\n"
         "```\n"
         "What is 2+2?\n"
-        "A. 3\n"
-        "B. 4\n"
-        "C. 5\n"
-        "D. 6\n"
+        "A) 3\n"
+        "B) 4\n"
+        "C) 5\n"
+        "D) 6\n"
         "Answer: 2\n\n"
         "Python is a...\n"
         "A. Snake\n"
@@ -167,8 +168,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "```\n\n"
         "📌 *Rules:*\n"
         "• One question per block (separated by blank lines)\n"
-        "• Exactly 4 options (A, B, C, D) with prefixes\n"
-        "• Answer format: 'Answer: <1-4>' (1=A, 2=B, etc.)",
+        "• Exactly 4 options (any prefix format accepted)\n"
+        "• Answer format: 'Answer: <1-4>' (1=first option, 2=second, etc.)",
         parse_mode='Markdown'
     )
 
@@ -182,7 +183,7 @@ async def create_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     )
 
 def parse_quiz_file(content: str) -> tuple:
-    """Parse and validate quiz content"""
+    """Parse and validate quiz content with flexible prefixes"""
     blocks = [b.strip() for b in content.split('\n\n') if b.strip()]
     valid_questions = []
     errors = []
@@ -199,13 +200,7 @@ def parse_quiz_file(content: str) -> tuple:
         options = lines[1:5]
         answer_line = lines[5]
         
-        # Validate options
-        option_errors = []
-        for idx, prefix in enumerate(['A', 'B', 'C', 'D']):
-            if not options[idx].startswith(f"{prefix}."):
-                option_errors.append(prefix)
-        
-        # Validate answer
+        # Validate answer format
         answer_error = None
         if not answer_line.lower().startswith('answer:'):
             answer_error = "Missing 'Answer:' prefix"
@@ -218,23 +213,18 @@ def parse_quiz_file(content: str) -> tuple:
                 answer_error = "Malformed answer line"
         
         # Compile errors or add valid question
-        if option_errors or answer_error:
-            error_parts = []
-            if option_errors:
-                error_parts.append(f"Bad options: {', '.join(option_errors)}")
-            if answer_error:
-                error_parts.append(answer_error)
-            errors.append(f"❌ Q{i}: {'; '.join(error_parts)}")
+        if answer_error:
+            errors.append(f"❌ Q{i}: {answer_error}")
         else:
             # Keep the full option text including prefixes
-            option_texts = options  # Use the original lines with prefixes
+            option_texts = options
             correct_id = int(answer_line.split(':')[1].strip()) - 1
             valid_questions.append((question, option_texts, correct_id))
     
     return valid_questions, errors
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Process uploaded quiz file"""
+    """Process uploaded quiz file with flexible prefixes"""
     if not update.message.document.file_name.endswith('.txt'):
         await update.message.reply_text("❌ Please send a .txt file")
         return
@@ -269,7 +259,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     await context.bot.send_poll(
                         chat_id=update.effective_chat.id,
                         question=question,
-                        options=options,  # Now includes A., B., C., D. prefixes
+                        options=options,  # Includes any prefix format
                         type='quiz',
                         correct_option_id=correct_id,
                         is_anonymous=False,
