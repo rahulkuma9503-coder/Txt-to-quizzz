@@ -3,7 +3,6 @@ import logging
 import threading
 import time
 import socket
-import re
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update
 from telegram.ext import (
@@ -25,7 +24,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
     """Enhanced HTTP handler for health checks and monitoring"""
     
     # Add server version identification
-    server_version = "TelegramQuizBot/4.0"
+    server_version = "TelegramQuizBot/5.0"
     
     def do_GET(self):
         try:
@@ -69,7 +68,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
                             <div class="info">
                                 <p><strong>Hostname:</strong> {hostname}</p>
                                 <p><strong>Uptime:</strong> {uptime:.2f} seconds</p>
-                                <p><strong>Version:</strong> 4.0 (Optional Explanation)</p>
+                                <p><strong>Version:</strong> 5.0 (Full Explanation)</p>
                                 <p><strong>Last Check:</strong> {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}</p>
                                 <p><strong>Client IP:</strong> {client_ip}</p>
                                 <p><strong>User Agent:</strong> {user_agent}</p>
@@ -159,7 +158,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "C) 5\n"
         "D) 6\n"
         "Answer: 2\n"
-        "Explanation: 2+2 equals 4\n\n"
+        "The correct answer is 4\n\n"
         "Python is a...\n"
         "A. Snake\n"
         "B. Programming language\n"
@@ -171,7 +170,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "• One question per block (separated by blank lines)\n"
         "• Exactly 4 options (any prefix format accepted)\n"
         "• Answer format: 'Answer: <1-4>' (1=first option, 2=second, etc.)\n"
-        "• Optional explanation line starting with 'Explanation: '",
+        "• Optional 7th line for explanation (any text)",
         parse_mode='Markdown'
     )
 
@@ -185,7 +184,7 @@ async def create_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     )
 
 def parse_quiz_file(content: str) -> tuple:
-    """Parse and validate quiz content with flexible prefixes and optional explanation"""
+    """Parse and validate quiz content with flexible prefixes and full explanation"""
     blocks = [b.strip() for b in content.split('\n\n') if b.strip()]
     valid_questions = []
     errors = []
@@ -202,17 +201,8 @@ def parse_quiz_file(content: str) -> tuple:
         options = lines[1:5]
         answer_line = lines[5]
         
-        # Check for explanation in 7th line
-        explanation = None
-        if len(lines) == 7:
-            explanation_line = lines[6]
-            if explanation_line.lower().startswith('explanation:'):
-                explanation = explanation_line.split(':', 1)[1].strip()
-            else:
-                # Treat as regular answer line if it starts with "Answer:"
-                if explanation_line.lower().startswith('answer:'):
-                    errors.append(f"❌ Question {i}: Found second answer line?")
-                    continue
+        # The entire 7th line is treated as explanation
+        explanation = lines[6] if len(lines) == 7 else None
         
         # Validate answer format
         answer_error = None
@@ -238,7 +228,7 @@ def parse_quiz_file(content: str) -> tuple:
     return valid_questions, errors
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Process uploaded quiz file with flexible prefixes and optional explanation"""
+    """Process uploaded quiz file with flexible prefixes and full explanation"""
     if not update.message.document.file_name.endswith('.txt'):
         await update.message.reply_text("❌ Please send a .txt file")
         return
@@ -280,7 +270,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                         "open_period": 10  # 10-second quiz
                     }
                     
-                    # Add explanation if provided
+                    # Add explanation if provided (entire 7th line)
                     if explanation:
                         poll_params["explanation"] = explanation
                     
