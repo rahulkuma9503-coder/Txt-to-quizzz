@@ -14,7 +14,7 @@ from telegram.ext import (
     filters,
     ContextTypes
 )
-from telegram.error import FloodWait, BadRequest
+from telegram.error import RetryAfter, BadRequest  # Corrected import
 from pymongo import MongoClient
 from datetime import datetime, timedelta
 from telegram.helpers import escape_markdown
@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 # Global variables
 bot_start_time = time.time()
-BOT_VERSION = "5.4"  # Enhanced broadcast support
+BOT_VERSION = "5.4.1"  # Fixed broadcast support
 
 class HealthCheckHandler(BaseHTTPRequestHandler):
     """Enhanced HTTP handler for health checks and monitoring"""
@@ -466,10 +466,10 @@ async def send_broadcast_message(context, user_id, message):
         # Copy message to user
         await message.copy(chat_id=user_id)
         return True, None
-    except FloodWait as e:
+    except RetryAfter as e:  # Correct exception for rate limits
         # Wait for the specified time plus a small buffer
-        wait_time = e.value + 0.5
-        logger.warning(f"FloodWait for {user_id}: Waiting {wait_time} seconds")
+        wait_time = e.retry_after + 0.5
+        logger.warning(f"Rate limited for {user_id}: Waiting {wait_time} seconds")
         await asyncio.sleep(wait_time)
         # Retry after waiting
         return await send_broadcast_message(context, user_id, message)
