@@ -25,7 +25,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
     """Enhanced HTTP handler for health checks and monitoring"""
     
     # Add server version identification
-    server_version = "TelegramQuizBot/3.0"
+    server_version = "TelegramQuizBot/4.0"
     
     def do_GET(self):
         try:
@@ -69,7 +69,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
                             <div class="info">
                                 <p><strong>Hostname:</strong> {hostname}</p>
                                 <p><strong>Uptime:</strong> {uptime:.2f} seconds</p>
-                                <p><strong>Version:</strong> 3.0 (Flexible Prefixes)</p>
+                                <p><strong>Version:</strong> 4.0 (Optional Explanation)</p>
                                 <p><strong>Last Check:</strong> {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}</p>
                                 <p><strong>Client IP:</strong> {client_ip}</p>
                                 <p><strong>User Agent:</strong> {user_agent}</p>
@@ -158,7 +158,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "B) 4\n"
         "C) 5\n"
         "D) 6\n"
-        "Answer: 2\n\n"
+        "Answer: 2\n"
+        "Explanation: 2+2 equals 4\n\n"
         "Python is a...\n"
         "A. Snake\n"
         "B. Programming language\n"
@@ -169,7 +170,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "📌 *Rules:*\n"
         "• One question per block (separated by blank lines)\n"
         "• Exactly 4 options (any prefix format accepted)\n"
-        "• Answer format: 'Answer: <1-4>' (1=first option, 2=second, etc.)",
+        "• Answer format: 'Answer: <1-4>' (1=first option, 2=second, etc.)\n"
+        "• Optional explanation line starting with 'Explanation: '",
         parse_mode='Markdown'
     )
 
@@ -183,7 +185,7 @@ async def create_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     )
 
 def parse_quiz_file(content: str) -> tuple:
-    """Parse and validate quiz content with flexible prefixes"""
+    """Parse and validate quiz content with flexible prefixes and optional explanation"""
     blocks = [b.strip() for b in content.split('\n\n') if b.strip()]
     valid_questions = []
     errors = []
@@ -191,14 +193,26 @@ def parse_quiz_file(content: str) -> tuple:
     for i, block in enumerate(blocks, 1):
         lines = [line.strip() for line in block.split('\n') if line.strip()]
         
-        # Basic validation
-        if len(lines) < 6:
-            errors.append(f"❌ Question {i}: Not enough lines (need 6, got {len(lines)})")
+        # Basic validation - now accepts 6 or 7 lines
+        if len(lines) not in (6, 7):
+            errors.append(f"❌ Question {i}: Invalid line count ({len(lines)}), expected 6 or 7")
             continue
             
         question = lines[0]
         options = lines[1:5]
         answer_line = lines[5]
+        
+        # Check for explanation in 7th line
+        explanation = None
+        if len(lines) == 7:
+            explanation_line = lines[6]
+            if explanation_line.lower().startswith('explanation:'):
+                explanation = explanation_line.split(':', 1)[1].strip()
+            else:
+                # Treat as regular answer line if it starts with "Answer:"
+                if explanation_line.lower().startswith('answer:'):
+                    errors.append(f"❌ Question {i}: Found second answer line?")
+                    continue
         
         # Validate answer format
         answer_error = None
@@ -219,12 +233,12 @@ def parse_quiz_file(content: str) -> tuple:
             # Keep the full option text including prefixes
             option_texts = options
             correct_id = int(answer_line.split(':')[1].strip()) - 1
-            valid_questions.append((question, option_texts, correct_id))
+            valid_questions.append((question, option_texts, correct_id, explanation))
     
     return valid_questions, errors
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Process uploaded quiz file with flexible prefixes"""
+    """Process uploaded quiz file with flexible prefixes and optional explanation"""
     if not update.message.document.file_name.endswith('.txt'):
         await update.message.reply_text("❌ Please send a .txt file")
         return
@@ -254,17 +268,23 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await update.message.reply_text(
                 f"✅ Sending {len(valid_questions)} quiz question(s)..."
             )
-            for question, options, correct_id in valid_questions:
+            for question, options, correct_id, explanation in valid_questions:
                 try:
-                    await context.bot.send_poll(
-                        chat_id=update.effective_chat.id,
-                        question=question,
-                        options=options,  # Includes any prefix format
-                        type='quiz',
-                        correct_option_id=correct_id,
-                        is_anonymous=False,
-                        open_period=10  # 10-second quiz
-                    )
+                    poll_params = {
+                        "chat_id": update.effective_chat.id,
+                        "question": question,
+                        "options": options,
+                        "type": 'quiz',
+                        "correct_option_id": correct_id,
+                        "is_anonymous": False,
+                        "open_period": 10  # 10-second quiz
+                    }
+                    
+                    # Add explanation if provided
+                    if explanation:
+                        poll_params["explanation"] = explanation
+                    
+                    await context.bot.send_poll(**poll_params)
                 except Exception as e:
                     logger.error(f"Poll send error: {str(e)}")
                     await update.message.reply_text("⚠️ Failed to send one quiz. Continuing...")
