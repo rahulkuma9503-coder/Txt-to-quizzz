@@ -3,6 +3,8 @@ import logging
 import threading
 import time
 import socket
+import traceback
+import asyncio
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update
 from telegram.ext import (
@@ -12,8 +14,10 @@ from telegram.ext import (
     filters,
     ContextTypes
 )
+from telegram.error import FloodWait, BadRequest
 from pymongo import MongoClient
 from datetime import datetime, timedelta
+from telegram.helpers import escape_markdown
 
 # Configure logging
 logging.basicConfig(
@@ -24,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 # Global variables
 bot_start_time = time.time()
-BOT_VERSION = "5.3"  # Media broadcast support
+BOT_VERSION = "5.4"  # Enhanced broadcast support
 
 class HealthCheckHandler(BaseHTTPRequestHandler):
     """Enhanced HTTP handler for health checks and monitoring"""
@@ -400,56 +404,6 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         
     # Get the replied message
     replied_msg = update.message.reply_to_message
-    broadcast_data = {"type": "text", "content": None}
-    
-    # Determine media type and extract content
-    if replied_msg.text:
-        broadcast_data = {
-            "type": "text",
-            "content": replied_msg.text
-        }
-    elif replied_msg.caption:
-        broadcast_data = {
-            "type": "text",
-            "content": replied_msg.caption
-        }
-    elif replied_msg.photo:
-        broadcast_data = {
-            "type": "photo",
-            "file_id": replied_msg.photo[-1].file_id,  # Highest resolution
-            "caption": replied_msg.caption
-        }
-    elif replied_msg.video:
-        broadcast_data = {
-            "type": "video",
-            "file_id": replied_msg.video.file_id,
-            "caption": replied_msg.caption
-        }
-    elif replied_msg.document:
-        broadcast_data = {
-            "type": "document",
-            "file_id": replied_msg.document.file_id,
-            "caption": replied_msg.caption
-        }
-    elif replied_msg.sticker:
-        broadcast_data = {
-            "type": "sticker",
-            "file_id": replied_msg.sticker.file_id
-        }
-    elif replied_msg.audio:
-        broadcast_data = {
-            "type": "audio",
-            "file_id": replied_msg.audio.file_id,
-            "caption": replied_msg.caption
-        }
-    elif replied_msg.voice:
-        broadcast_data = {
-            "type": "voice",
-            "file_id": replied_msg.voice.file_id
-        }
-    else:
-        await update.message.reply_text("⚠️ Unsupported message type for broadcast")
-        return
         
     db = get_db()
     if db is None:
@@ -467,16 +421,25 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             
         # Create preview message
         preview_text = "📢 *Broadcast Preview*\n\n"
-        preview_text += f"• Type: {broadcast_data['type'].capitalize()}\n"
         preview_text += f"• Recipients: {total_users} users\n\n"
         
-        if broadcast_data['type'] == 'text':
-            display_text = broadcast_data['content'][:300] + "..." if len(broadcast_data['content']) > 300 else broadcast_data['content']
-            preview_text += f"Content:\n`{display_text}`"
+        if replied_msg.text:
+            safe_content = escape_markdown(replied_msg.text)
+            display_text = safe_content[:300] + "..." if len(safe_content) > 300 else safe_content
+            preview_text += f"Content:\n```\n{display_text}\n```"
+        elif replied_msg.caption:
+            safe_caption = escape_markdown(replied_msg.caption)
+            caption_snippet = safe_caption[:100] + "..." if len(safe_caption) > 100 else safe_caption
+            preview_text += f"Caption:\n```\n{caption_snippet}\n```"
         else:
-            if broadcast_data.get('caption'):
-                preview_text += f"Caption: {broadcast_data['caption'][:100]}...\n\n" if len(broadcast_data['caption']) > 100 else f"Caption: {broadcast_data['caption']}\n\n"
-            preview_text += f"✅ Ready to send {broadcast_data['type']}"
+            media_type = "media"
+            if replied_msg.photo: media_type = "photo"
+            elif replied_msg.video: media_type = "video"
+            elif replied_msg.document: media_type = "document"
+            elif replied_msg.sticker: media_type = "sticker"
+            elif replied_msg.audio: media_type = "audio"
+            elif replied_msg.voice: media_type = "voice"
+            preview_text += f"✅ Ready to send {media_type} message"
             
         preview_text += "\n\nType /confirm_broadcast to send or /cancel to abort."
         
@@ -488,7 +451,7 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         
         # Store broadcast data in context
         context.user_data["broadcast_data"] = {
-            "data": broadcast_data,
+            "message": replied_msg,
             "user_ids": user_ids,
             "preview_msg_id": preview_msg.message_id
         }
@@ -496,6 +459,25 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     except Exception as e:
         logger.error(f"Broadcast preparation error: {e}")
         await update.message.reply_text("⚠️ Error preparing broadcast. Please try again later.")
+
+async def send_broadcast_message(context, user_id, message):
+    """Send broadcast message to a specific user with error handling"""
+    try:
+        # Copy message to user
+        await message.copy(chat_id=user_id)
+        return True, None
+    except FloodWait as e:
+        # Wait for the specified time plus a small buffer
+        wait_time = e.value + 0.5
+        logger.warning(f"FloodWait for {user_id}: Waiting {wait_time} seconds")
+        await asyncio.sleep(wait_time)
+        # Retry after waiting
+        return await send_broadcast_message(context, user_id, message)
+    except (BadRequest, Exception) as e:
+        error_type = type(e).__name__
+        error_details = str(e)
+        logger.warning(f"Failed to send to {user_id}: {error_type} - {error_details}")
+        return False, f"{user_id}: {error_type} - {error_details}"
 
 async def confirm_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await record_user_interaction(update)
@@ -512,91 +494,65 @@ async def confirm_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         
     try:
         user_ids = broadcast_data["user_ids"]
-        media_data = broadcast_data["data"]
+        message_to_broadcast = broadcast_data["message"]
         total_users = len(user_ids)
         
         status_msg = await update.message.reply_text(
             f"📤 Broadcasting to {total_users} users...\n\n"
-            f"0/{total_users} (0%)"
+            f"0/{total_users} (0%)\n"
+            f"✅ Success: 0 | ❌ Failed: 0"
         )
         
         success = 0
         failed = 0
+        failed_details = []
         
         # Send messages with rate limiting
         for i, user_id in enumerate(user_ids):
-            try:
-                # Handle different media types
-                if media_data['type'] == 'text':
-                    await context.bot.send_message(
-                        chat_id=user_id,
-                        text=media_data['content']
-                    )
-                elif media_data['type'] == 'photo':
-                    await context.bot.send_photo(
-                        chat_id=user_id,
-                        photo=media_data['file_id'],
-                        caption=media_data.get('caption', '')
-                    )
-                elif media_data['type'] == 'video':
-                    await context.bot.send_video(
-                        chat_id=user_id,
-                        video=media_data['file_id'],
-                        caption=media_data.get('caption', '')
-                    )
-                elif media_data['type'] == 'document':
-                    await context.bot.send_document(
-                        chat_id=user_id,
-                        document=media_data['file_id'],
-                        caption=media_data.get('caption', '')
-                    )
-                elif media_data['type'] == 'sticker':
-                    await context.bot.send_sticker(
-                        chat_id=user_id,
-                        sticker=media_data['file_id']
-                    )
-                elif media_data['type'] == 'audio':
-                    await context.bot.send_audio(
-                        chat_id=user_id,
-                        audio=media_data['file_id'],
-                        caption=media_data.get('caption', '')
-                    )
-                elif media_data['type'] == 'voice':
-                    await context.bot.send_voice(
-                        chat_id=user_id,
-                        voice=media_data['file_id']
-                    )
-                    
+            result, error = await send_broadcast_message(context, user_id, message_to_broadcast)
+            
+            if result:
                 success += 1
-            except Exception as e:
-                logger.warning(f"Broadcast failed for {user_id}: {str(e)}")
+            else:
                 failed += 1
-                
-            # Update progress every 5 messages or last message
-            if (i + 1) % 5 == 0 or (i + 1) == total_users:
+                if error and len(failed_details) < 20:  # Keep reasonable number of errors
+                    failed_details.append(error)
+            
+            # Update progress every 10 users or last user
+            if (i + 1) % 10 == 0 or (i + 1) == total_users:
                 percent = (i + 1) * 100 // total_users
                 await status_msg.edit_text(
                     f"📤 Broadcasting to {total_users} users...\n\n"
                     f"{i+1}/{total_users} ({percent}%)\n"
                     f"✅ Success: {success} | ❌ Failed: {failed}"
                 )
-                time.sleep(1)  # Conservative rate limiting
+                # Conservative rate limiting
+                await asyncio.sleep(0.2)
         
-        # Final status report
-        await status_msg.edit_text(
+        # Prepare final report
+        report_text = (
             f"✅ Broadcast Complete!\n\n"
-            f"• Type: {media_data['type'].capitalize()}\n"
             f"• Recipients: {total_users}\n"
             f"• Success: {success}\n"
             f"• Failed: {failed}"
         )
+        
+        # Add error details if any failures
+        if failed > 0:
+            report_text += f"\n\n📛 Failed Users (Sample):\n"
+            report_text += "\n".join(failed_details[:5])  # Show first 5 errors
+            if failed > 5:
+                report_text += f"\n\n...and {failed - 5} more failures"
+        
+        # Update final status
+        await status_msg.edit_text(report_text)
         
         # Cleanup
         del context.user_data["broadcast_data"]
         
     except Exception as e:
         logger.error(f"Broadcast error: {e}")
-        await update.message.reply_text("⚠️ Error during broadcast. Operation aborted.")
+        await update.message.reply_text(f"⚠️ Critical broadcast error: {str(e)}")
 
 async def cancel_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await record_user_interaction(update)
