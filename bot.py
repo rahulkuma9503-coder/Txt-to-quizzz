@@ -5,9 +5,9 @@ import time
 import socket
 import traceback
 import asyncio
-import html  # Added for HTML escaping
+import html
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -193,18 +193,31 @@ async def record_user_interaction(update: Update):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await record_user_interaction(update)
     """Send welcome message and instructions"""
+    # Create inline button for tutorial
+    keyboard = [
+        [InlineKeyboardButton("📺 Watch Tutorial", url="https://youtu.be/WeqpaV6VnO4?si=Y0pDondqe-nmIuht")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
     await update.message.reply_text(
         "🌟 *Welcome to Quiz Bot!* 🌟\n\n"
         "I can turn your text files into interactive 10-second quizzes!\n\n"
         "🔹 Use /createquiz - Start quiz creation\n"
         "🔹 Use /help - Show formatting guide\n\n"
         "Let's make learning fun!",
-        parse_mode='Markdown'
+        parse_mode='Markdown',
+        reply_markup=reply_markup
     )
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await record_user_interaction(update)
     """Show detailed formatting instructions"""
+    # Create inline button for tutorial
+    keyboard = [
+        [InlineKeyboardButton("📺 Watch Tutorial", url="https://youtu.be/WeqpaV6VnO4?si=Y0pDondqe-nmIuht")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
     await update.message.reply_text(
         "📝 *Quiz File Format Guide:*\n\n"
         "```\n"
@@ -227,7 +240,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "• Exactly 4 options (any prefix format accepted)\n"
         "• Answer format: 'Answer: <1-4>' (1=first option, 2=second, etc.)\n"
         "• Optional 7th line for explanation (any text)",
-        parse_mode='Markdown'
+        parse_mode='Markdown',
+        reply_markup=reply_markup
     )
 
 async def create_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
