@@ -5,6 +5,7 @@ import time
 import socket
 import traceback
 import asyncio
+import html  # Added for HTML escaping
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update
 from telegram.ext import (
@@ -14,10 +15,9 @@ from telegram.ext import (
     filters,
     ContextTypes
 )
-from telegram.error import RetryAfter, BadRequest  # Corrected import
+from telegram.error import RetryAfter, BadRequest
 from pymongo import MongoClient
 from datetime import datetime, timedelta
-from telegram.helpers import escape_markdown
 
 # Configure logging
 logging.basicConfig(
@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 # Global variables
 bot_start_time = time.time()
-BOT_VERSION = "5.4.1"  # Fixed broadcast support
+BOT_VERSION = "5.5"  # HTML broadcast previews
 
 class HealthCheckHandler(BaseHTTPRequestHandler):
     """Enhanced HTTP handler for health checks and monitoring"""
@@ -394,11 +394,11 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     # Check if message is a reply
     if not update.message.reply_to_message:
         await update.message.reply_text(
-            "📢 *Usage Instructions:*\n\n"
+            "📢 <b>Usage Instructions:</b>\n\n"
             "1. Reply to any message with /broadcast\n"
             "2. Confirm with /confirm_broadcast\n\n"
             "Supports: text, photos, videos, documents, stickers, audio",
-            parse_mode='Markdown'
+            parse_mode='HTML'
         )
         return
         
@@ -419,18 +419,20 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             await update.message.reply_text("⚠️ No users found in database.")
             return
             
-        # Create preview message
-        preview_text = "📢 *Broadcast Preview*\n\n"
-        preview_text += f"• Recipients: {total_users} users\n\n"
+        # Create preview message with HTML formatting
+        preview_html = "📢 <b>Broadcast Preview</b>\n\n"
+        preview_html += f"• Recipients: {total_users} users\n\n"
         
         if replied_msg.text:
-            safe_content = escape_markdown(replied_msg.text)
-            display_text = safe_content[:300] + "..." if len(safe_content) > 300 else safe_content
-            preview_text += f"Content:\n```\n{display_text}\n```"
+            # Escape and truncate text
+            safe_content = html.escape(replied_msg.text)
+            display_text = safe_content[:300] + ("..." if len(safe_content) > 300 else "")
+            preview_html += f"Content:\n<pre>{display_text}</pre>"
         elif replied_msg.caption:
-            safe_caption = escape_markdown(replied_msg.caption)
-            caption_snippet = safe_caption[:100] + "..." if len(safe_caption) > 100 else safe_caption
-            preview_text += f"Caption:\n```\n{caption_snippet}\n```"
+            # Escape and truncate caption
+            safe_caption = html.escape(replied_msg.caption)
+            caption_snippet = safe_caption[:100] + ("..." if len(safe_caption) > 100 else "")
+            preview_html += f"Caption:\n<pre>{caption_snippet}</pre>"
         else:
             media_type = "media"
             if replied_msg.photo: media_type = "photo"
@@ -439,14 +441,14 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             elif replied_msg.sticker: media_type = "sticker"
             elif replied_msg.audio: media_type = "audio"
             elif replied_msg.voice: media_type = "voice"
-            preview_text += f"✅ Ready to send {media_type} message"
+            preview_html += f"✅ Ready to send {html.escape(media_type)} message"
             
-        preview_text += "\n\nType /confirm_broadcast to send or /cancel to abort."
+        preview_html += "\n\nType /confirm_broadcast to send or /cancel to abort."
         
-        # Send preview
+        # Send preview with HTML parsing
         preview_msg = await update.message.reply_text(
-            preview_text,
-            parse_mode='Markdown'
+            preview_html,
+            parse_mode='HTML'
         )
         
         # Store broadcast data in context
@@ -466,7 +468,7 @@ async def send_broadcast_message(context, user_id, message):
         # Copy message to user
         await message.copy(chat_id=user_id)
         return True, None
-    except RetryAfter as e:  # Correct exception for rate limits
+    except RetryAfter as e:
         # Wait for the specified time plus a small buffer
         wait_time = e.retry_after + 0.5
         logger.warning(f"Rate limited for {user_id}: Waiting {wait_time} seconds")
