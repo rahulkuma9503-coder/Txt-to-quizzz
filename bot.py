@@ -6,6 +6,10 @@ import socket
 import traceback
 import asyncio
 import html
+import secrets
+import string
+import random
+import aiohttp
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -28,7 +32,13 @@ logger = logging.getLogger(__name__)
 
 # Global variables
 bot_start_time = time.time()
-BOT_VERSION = "5.5"  # HTML broadcast previews
+BOT_VERSION = "7.3"  # Added sudo management and tutorial
+temp_params = {}  # Temporary storage for verification params
+
+# API Configuration
+AD_API = os.getenv('AD_API', '446b3a3f0039a2826f1483f22e9080963974ad3b')
+WEBSITE_URL = os.getenv('WEBSITE_URL', 'upshrink.com')
+YOUTUBE_TUTORIAL = "https://youtu.be/WeqpaV6VnO4?si=Y0pDondqe-nmIuht"  # Added tutorial link
 
 class HealthCheckHandler(BaseHTTPRequestHandler):
     """Enhanced HTTP handler for health checks and monitoring"""
@@ -160,6 +170,28 @@ def get_db():
         logger.error(f"MongoDB connection error: {e}")
         return None
 
+# Create TTL index for token expiration
+def create_ttl_index():
+    try:
+        db = get_db()
+        if db is not None:
+            tokens = db.tokens
+            tokens.create_index("expires_at", expireAfterSeconds=0)
+            logger.info("Created TTL index for token expiration")
+    except Exception as e:
+        logger.error(f"Error creating TTL index: {e}")
+
+# Create index for sudo users
+def create_sudo_index():
+    try:
+        db = get_db()
+        if db is not None:
+            sudo_users = db.sudo_users
+            sudo_users.create_index("user_id", unique=True)
+            logger.info("Created index for sudo_users")
+    except Exception as e:
+        logger.error(f"Error creating sudo index: {e}")
+
 # Record user interaction
 async def record_user_interaction(update: Update):
     try:
@@ -190,21 +222,218 @@ async def record_user_interaction(update: Update):
     except Exception as e:
         logger.error(f"Error saving user data: {e}")
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+# Generate a random parameter
+def generate_random_param(length=8):
+    """Generate a random parameter for verification"""
+    alphabet = string.ascii_letters + string.digits
+    return ''.join(secrets.choice(alphabet) for _ in range(length))
+
+# Get shortened URL using ad_api service
+async def get_shortened_url(deep_link):
+    """Shorten URL using ad_api service"""
+    try:
+        api_url = f"https://{WEBSITE_URL}/api?api={AD_API}&url={deep_link}"
+        
+        # Use timeout to prevent hanging
+        timeout = aiohttp.ClientTimeout(total=5)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(api_url) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    if data.get("status") == "success":
+                        return data.get("shortenedUrl")
+        return None
+    except asyncio.TimeoutError:
+        logger.warning("URL shortening timed out")
+        return None
+    except Exception as e:
+        logger.error(f"URL shortening failed: {e}")
+        return None
+
+# Check if user is sudo
+def is_sudo(user_id):
+    """Check if user is sudo (owner or in sudo list)"""
+    owner_id = os.getenv('OWNER_ID')
+    if owner_id and str(user_id) == owner_id:
+        return True
+        
+    db = get_db()
+    if db is None:
+        return False
+        
+    sudo_users = db.sudo_users
+    return sudo_users.find_one({"user_id": user_id}) is not None
+
+# Token command
+async def token_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await record_user_interaction(update)
-    """Send welcome message and instructions"""
-    # Create inline button for tutorial
-    keyboard = [
-        [InlineKeyboardButton("📺 Watch Tutorial", url="https://youtu.be/WeqpaV6VnO4?si=Y0pDondqe-nmIuht")]
-    ]
+    user = update.effective_user
+    user_id = user.id
+    
+    # Sudo users don't need tokens
+    if is_sudo(user_id):
+        await update.message.reply_text(
+            "🌟 You are a sudo user! You don't need a token to use the bot.",
+            parse_mode='Markdown'
+        )
+        return
+    
+    # Check if user already has valid token
+    if await has_valid_token(user_id):
+        await update.message.reply_text(
+            "✅ Your access token is already active! Enjoy your 24-hour access.",
+            parse_mode='Markdown'
+        )
+        return
+    
+    # Generate new verification param
+    param = generate_random_param()
+    temp_params[user_id] = param
+    
+    # Create deep link
+    bot_username = os.getenv('BOT_USERNAME', context.bot.username)
+    deep_link = f"https://t.me/{bot_username}?start={param}"
+    
+    # Get shortened URL
+    short_url = await get_shortened_url(deep_link)
+    if not short_url:
+        await update.message.reply_text(
+            "⚠️ Failed to generate verification link. Please try again.",
+            parse_mode='Markdown'
+        )
+        return
+    
+    # Create response message
+    response_text = (
+        "🔑 Click the button below to verify your access token:\n\n"
+        "✨ <b>What you'll get:</b>\n"
+        "1. Full access for 24 hours\n"
+        "2. Increased command limits\n"
+        "3. All features unlocked\n\n"
+        "This link is valid for 5 minutes"
+    )
+    
+    # Create inline button
+    keyboard = [[
+        InlineKeyboardButton(
+            "✅ Verify Token Now",
+            url=short_url
+        )
+    ]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     await update.message.reply_text(
+        response_text,
+        parse_mode='HTML',
+        reply_markup=reply_markup
+    )
+
+# Token verification helper
+async def check_token_or_sudo(update: Update, context: ContextTypes.DEFAULT_TYPE, handler):
+    """Check if user is sudo or has valid token"""
+    user_id = update.effective_user.id
+    if is_sudo(user_id) or await has_valid_token(user_id):
+        return await handler(update, context)
+    
+    await update.message.reply_text(
+        "🔒 Access restricted! You need a valid token to use this feature.\n\n"
+        "Use /token to get your access token.",
+        parse_mode='Markdown'
+    )
+
+# Wrapper functions for token verification
+async def start_wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    # Handle token activation
+    if context.args and context.args[0]:
+        token = context.args[0]
+        user = update.effective_user
+        user_id = user.id
+        
+        # Check if it's a verification token
+        if user_id in temp_params and temp_params[user_id] == token:
+            # Store token in database
+            db = get_db()
+            if db is not None:
+                tokens = db.tokens
+                tokens.update_one(
+                    {"user_id": user_id},
+                    {"$set": {
+                        "token": token,
+                        "created_at": datetime.utcnow(),
+                        "expires_at": datetime.utcnow() + timedelta(hours=24)  # Changed to 24 hours
+                    }},
+                    upsert=True
+                )
+            
+            # Remove temp param and notify user
+            del temp_params[user_id]
+            await update.message.reply_text(
+                "✅ Token activated successfully! Enjoy your 24-hour access.",  # Updated message
+                parse_mode='Markdown'
+            )
+        else:
+            await update.message.reply_text(
+                "⚠️ Invalid or expired verification token. Generate a new one with /token.",
+                parse_mode='Markdown'
+            )
+        return
+    
+    # Skip token check for the start command itself
+    await start(update, context)
+
+async def help_command_wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await check_token_or_sudo(update, context, help_command)
+
+async def create_quiz_wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await check_token_or_sudo(update, context, create_quiz)
+
+async def stats_command_wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await check_token_or_sudo(update, context, stats_command)
+
+async def broadcast_command_wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await check_token_or_sudo(update, context, broadcast_command)
+
+async def confirm_broadcast_wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await check_token_or_sudo(update, context, confirm_broadcast)
+
+async def cancel_broadcast_wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await check_token_or_sudo(update, context, cancel_broadcast)
+
+async def handle_document_wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await check_token_or_sudo(update, context, handle_document)
+
+# Original command handlers
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await record_user_interaction(update)
+    """Send welcome message and instructions"""
+    welcome_msg = (
         "🌟 *Welcome to Quiz Bot!* 🌟\n\n"
         "I can turn your text files into interactive 10-second quizzes!\n\n"
         "🔹 Use /createquiz - Start quiz creation\n"
-        "🔹 Use /help - Show formatting guide\n\n"
-        "Let's make learning fun!",
+        "🔹 Use /help - Show formatting guide\n"
+        "🔹 Use /token - Get your access token\n\n"
+    )
+    
+    # Add token status for non-sudo users
+    if not is_sudo(update.effective_user.id):
+        welcome_msg += (
+            "🔒 You need a token to access all features\n"
+            "Get your access token with /token - Valid for 24 hours\n\n"
+        )
+    
+    welcome_msg += "Let's make learning fun!"
+    
+    # Create keyboard with tutorial button
+    keyboard = [[
+        InlineKeyboardButton(
+            "🎥 Watch Tutorial",
+            url=YOUTUBE_TUTORIAL
+        )
+    ]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(
+        welcome_msg, 
         parse_mode='Markdown',
         reply_markup=reply_markup
     )
@@ -212,10 +441,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await record_user_interaction(update)
     """Show detailed formatting instructions"""
-    # Create inline button for tutorial
-    keyboard = [
-        [InlineKeyboardButton("📺 Watch Tutorial", url="https://youtu.be/WeqpaV6VnO4?si=Y0pDondqe-nmIuht")]
-    ]
+    # Create keyboard with tutorial button
+    keyboard = [[
+        InlineKeyboardButton(
+            "🎥 Watch Tutorial",
+            url=YOUTUBE_TUTORIAL
+        )
+    ]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     await update.message.reply_text(
@@ -325,6 +557,9 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await update.message.reply_text(
                 f"✅ Sending {len(valid_questions)} quiz question(s)..."
             )
+            
+            # Send all quizzes asynchronously
+            send_tasks = []
             for question, options, correct_id, explanation in valid_questions:
                 try:
                     poll_params = {
@@ -340,10 +575,15 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     if explanation:
                         poll_params["explanation"] = explanation
                     
-                    await context.bot.send_poll(**poll_params)
+                    # Create task but don't await immediately
+                    task = context.bot.send_poll(**poll_params)
+                    send_tasks.append(task)
                 except Exception as e:
-                    logger.error(f"Poll send error: {str(e)}")
-                    await update.message.reply_text("⚠️ Failed to send one quiz. Continuing...")
+                    logger.error(f"Poll creation error: {str(e)}")
+            
+            # Send all quizzes concurrently
+            await asyncio.gather(*send_tasks, return_exceptions=True)
+            
         else:
             await update.message.reply_text("❌ No valid questions found in file")
             
@@ -370,6 +610,14 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         users = db.users
         total_users = users.count_documents({})
         
+        # Get token usage stats
+        tokens = db.tokens
+        active_tokens = tokens.count_documents({})
+        
+        # Get sudo users count
+        sudo_users = db.sudo_users
+        sudo_count = sudo_users.count_documents({})
+        
         # Ping calculation
         start_time = time.time()
         ping_msg = await update.message.reply_text("🏓 Pong!")
@@ -383,6 +631,8 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         stats_message = (
             f"📊 *Bot Statistics*\n\n"
             f"• Total Users: `{total_users}`\n"
+            f"• Active Tokens: `{active_tokens}`\n"
+            f"• Sudo Users: `{sudo_count}`\n"
             f"• Current Ping: `{ping_time:.2f} ms`\n"
             f"• Uptime: `{uptime}`\n"
             f"• Version: `{BOT_VERSION}`\n\n"
@@ -531,11 +781,11 @@ async def confirm_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                 success += 1
             else:
                 failed += 1
-                if error and len(failed_details) < 20:  # Keep reasonable number of errors
+                if error and len(failed_details) < 20:
                     failed_details.append(error)
             
-            # Update progress every 10 users or last user
-            if (i + 1) % 10 == 0 or (i + 1) == total_users:
+            # Update progress every 20 users or last user
+            if (i + 1) % 20 == 0 or (i + 1) == total_users:
                 percent = (i + 1) * 100 // total_users
                 await status_msg.edit_text(
                     f"📤 Broadcasting to {total_users} users...\n\n"
@@ -543,7 +793,7 @@ async def confirm_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                     f"✅ Success: {success} | ❌ Failed: {failed}"
                 )
                 # Conservative rate limiting
-                await asyncio.sleep(0.2)
+                await asyncio.sleep(0.1)
         
         # Prepare final report
         report_text = (
@@ -556,7 +806,7 @@ async def confirm_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         # Add error details if any failures
         if failed > 0:
             report_text += f"\n\n📛 Failed Users (Sample):\n"
-            report_text += "\n".join(failed_details[:5])  # Show first 5 errors
+            report_text += "\n".join(failed_details[:5])
             if failed > 5:
                 report_text += f"\n\n...and {failed - 5} more failures"
         
@@ -584,8 +834,115 @@ async def cancel_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     else:
         await update.message.reply_text("ℹ️ No pending broadcast to cancel.")
 
+# Sudo management commands
+async def add_sudo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Add user to sudo list (owner only)"""
+    await record_user_interaction(update)
+    
+    # Verify owner
+    owner_id = os.getenv('OWNER_ID')
+    if not owner_id or str(update.effective_user.id) != owner_id:
+        await update.message.reply_text("🚫 This command is only available to the bot owner.")
+        return
+        
+    # Get target user
+    target_user = None
+    if context.args:
+        try:
+            target_user = int(context.args[0])
+        except ValueError:
+            pass
+    elif update.message.reply_to_message:
+        target_user = update.message.reply_to_message.from_user.id
+    
+    if not target_user:
+        await update.message.reply_text(
+            "ℹ️ Usage:\n"
+            "Reply to user's message with /addsudo\n"
+            "Or use /addsudo <user_id>"
+        )
+        return
+        
+    # Add to sudo list
+    db = get_db()
+    if db is None:
+        await update.message.reply_text("⚠️ Database connection error")
+        return
+        
+    sudo_users = db.sudo_users
+    result = sudo_users.update_one(
+        {"user_id": target_user},
+        {"$set": {"user_id": target_user, "added_at": datetime.utcnow()}},
+        upsert=True
+    )
+    
+    if result.upserted_id or result.modified_count:
+        await update.message.reply_text(f"✅ Added user {target_user} to sudo list!")
+    else:
+        await update.message.reply_text("⚠️ Failed to add user to sudo list")
+
+async def rem_sudo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Remove user from sudo list (owner only)"""
+    await record_user_interaction(update)
+    
+    # Verify owner
+    owner_id = os.getenv('OWNER_ID')
+    if not owner_id or str(update.effective_user.id) != owner_id:
+        await update.message.reply_text("🚫 This command is only available to the bot owner.")
+        return
+        
+    # Get target user
+    target_user = None
+    if context.args:
+        try:
+            target_user = int(context.args[0])
+        except ValueError:
+            pass
+    elif update.message.reply_to_message:
+        target_user = update.message.reply_to_message.from_user.id
+    
+    if not target_user:
+        await update.message.reply_text(
+            "ℹ️ Usage:\n"
+            "Reply to user's message with /remsudo\n"
+            "Or use /remsudo <user_id>"
+        )
+        return
+        
+    # Remove from sudo list
+    db = get_db()
+    if db is None:
+        await update.message.reply_text("⚠️ Database connection error")
+        return
+        
+    sudo_users = db.sudo_users
+    result = sudo_users.delete_one({"user_id": target_user})
+    
+    if result.deleted_count:
+        await update.message.reply_text(f"✅ Removed user {target_user} from sudo list!")
+    else:
+        await update.message.reply_text("⚠️ User not found in sudo list")
+
+# Check if user has valid token
+async def has_valid_token(user_id):
+    if is_sudo(user_id):
+        return True
+        
+    db = get_db()
+    if db is None:
+        return False
+        
+    tokens = db.tokens
+    token_data = tokens.find_one({"user_id": user_id})
+    
+    return token_data is not None  # TTL index handles expiration
+
 def main() -> None:
     """Run the bot and HTTP server"""
+    # Create database indexes
+    create_ttl_index()
+    create_sudo_index()
+    
     # Get port from environment (Render provides this)
     PORT = int(os.environ.get('PORT', 10000))
     logger.info(f"Starting HTTP server on port {PORT}")
@@ -605,14 +962,19 @@ def main() -> None:
     application = Application.builder().token(TOKEN).build()
     
     # Add handlers
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("createquiz", create_quiz))
-    application.add_handler(CommandHandler("stats", stats_command))
-    application.add_handler(CommandHandler("broadcast", broadcast_command))
-    application.add_handler(CommandHandler("confirm_broadcast", confirm_broadcast))
-    application.add_handler(CommandHandler("cancel", cancel_broadcast))
-    application.add_handler(MessageHandler(filters.Document.TEXT, handle_document))
+    application.add_handler(CommandHandler("start", start_wrapper))
+    application.add_handler(CommandHandler("help", help_command_wrapper))
+    application.add_handler(CommandHandler("createquiz", create_quiz_wrapper))
+    application.add_handler(CommandHandler("stats", stats_command_wrapper))
+    application.add_handler(CommandHandler("broadcast", broadcast_command_wrapper))
+    application.add_handler(CommandHandler("confirm_broadcast", confirm_broadcast_wrapper))
+    application.add_handler(CommandHandler("cancel", cancel_broadcast_wrapper))
+    application.add_handler(CommandHandler("token", token_command))
+    application.add_handler(MessageHandler(filters.Document.TEXT, handle_document_wrapper))
+    
+    # Add sudo management commands
+    application.add_handler(CommandHandler("addsudo", add_sudo))
+    application.add_handler(CommandHandler("remsudo", rem_sudo))
     
     # Start polling
     logger.info("Starting Telegram bot in polling mode...")
