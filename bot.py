@@ -10,6 +10,7 @@ import secrets
 import string
 import random
 import aiohttp
+from flask import Flask
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -40,119 +41,18 @@ AD_API = os.getenv('AD_API', '446b3a3f0039a2826f1483f22e9080963974ad3b')
 WEBSITE_URL = os.getenv('WEBSITE_URL', 'upshrink.com')
 YOUTUBE_TUTORIAL = "https://youtu.be/WeqpaV6VnO4?si=Y0pDondqe-nmIuht"  # Added tutorial link
 
-class HealthCheckHandler(BaseHTTPRequestHandler):
-    """Enhanced HTTP handler for health checks and monitoring"""
-    
-    server_version = f"TelegramQuizBot/{BOT_VERSION}"
-    
-    def do_GET(self):
-        try:
-            start_time = time.time()
-            client_ip = self.client_address[0]
-            user_agent = self.headers.get('User-Agent', 'Unknown')
-            
-            logger.info(f"Health check request: {self.path} from {client_ip} ({user_agent})")
-            
-            # Handle all valid endpoints
-            if self.path in ['/', '/health', '/status']:
-                # Simple plain text response for monitoring services
-                response_text = "OK"
-                content_type = "text/plain"
-                
-                # Detailed HTML response for browser requests
-                if "Mozilla" in user_agent:  # Browser detection
-                    status = "🟢 Bot is running"
-                    uptime = time.time() - self.server.start_time
-                    hostname = socket.gethostname()
-                    
-                    response_text = f"""
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Quiz Bot Status</title>
-    <style>
-        body {{ font-family: Arial, sans-serif; margin: 20px; }}
-        .container {{ max-width: 800px; margin: 0 auto; }}
-        .status {{ font-size: 1.5em; font-weight: bold; color: #2ecc71; }}
-        .info {{ margin-top: 20px; padding: 15px; background-color: #f8f9fa; border-radius: 5px; }}
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>Telegram Quiz Bot Status</h1>
-        <div class="status">{status}</div>
-        
-        <div class="info">
-            <p><strong>Hostname:</strong> {hostname}</p>
-            <p><strong>Uptime:</strong> {uptime:.2f} seconds</p>
-            <p><strong>Version:</strong> {BOT_VERSION}</p>
-            <p><strong>Last Check:</strong> {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}</p>
-            <p><strong>Client IP:</strong> {client_ip}</p>
-            <p><strong>User Agent:</strong> {user_agent}</p>
-        </div>
-        
-        <p style="margin-top: 30px;">
-            <a href="https://t.me/{os.getenv('BOT_USERNAME', 'your_bot')}" target="_blank">
-                Contact the bot on Telegram
-            </a>
-        </p>
-    </div>
-</body>
-</html>
-                    """
-                    content_type = "text/html"
-                
-                # Send response
-                response = response_text.encode('utf-8')
-                self.send_response(200)
-                self.send_header('Content-type', content_type)
-                self.send_header('Content-Length', str(len(response)))
-                self.end_headers()
-                self.wfile.write(response)
-                
-                # Log successful request
-                duration = (time.time() - start_time) * 1000
-                logger.info(f"Health check passed - 200 OK - {duration:.2f}ms")
-            else:
-                self.send_response(404)
-                self.send_header('Content-type', 'text/plain')
-                self.end_headers()
-                self.wfile.write(b'404 Not Found')
-                logger.warning(f"Invalid path requested: {self.path}")
-                
-        except Exception as e:
-            logger.error(f"Health check error: {e}")
-            self.send_response(500)
-            self.send_header('Content-type', 'text/plain')
-            self.end_headers()
-            self.wfile.write(b'500 Internal Server Error')
+# Flask app for health checks
+app = Flask(__name__)
 
-    def log_message(self, format, *args):
-        """Override to prevent default logging"""
-        pass
+@app.route('/')
+@app.route('/health')
+@app.route('/status')
+def health_check():
+    return "Bot is running", 200
 
-def run_http_server(port=8080):
-    """Run HTTP server in a separate thread"""
-    try:
-        server_address = ('0.0.0.0', port)
-        httpd = HTTPServer(server_address, HealthCheckHandler)
-        
-        # Add start time to server instance
-        httpd.start_time = time.time()
-        
-        logger.info(f"HTTP server running on port {port}")
-        logger.info(f"Access URLs:")
-        logger.info(f"  http://localhost:{port}/")
-        logger.info(f"  http://localhost:{port}/health")
-        logger.info(f"  http://localhost:{port}/status")
-        
-        httpd.serve_forever()
-    except Exception as e:
-        logger.critical(f"Failed to start HTTP server: {e}")
-        time.sleep(5)
-        run_http_server(port)
+def run_flask():
+    port = int(os.environ.get('PORT', 8000))
+    app.run(host='0.0.0.0', port=port)
 
 # MongoDB connection function
 def get_db():
@@ -943,14 +843,10 @@ def main() -> None:
     create_ttl_index()
     create_sudo_index()
     
-    # Get port from environment (Render provides this)
-    PORT = int(os.environ.get('PORT', 10000))
-    logger.info(f"Starting HTTP server on port {PORT}")
-    
-    # Start HTTP server in a daemon thread
-    http_thread = threading.Thread(target=run_http_server, args=(PORT,), daemon=True)
-    http_thread.start()
-    logger.info(f"HTTP server thread started")
+    # Start Flask server in a daemon thread
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+    logger.info(f"Flask server started in separate thread")
     
     # Get token from environment
     TOKEN = os.getenv('TELEGRAM_TOKEN')
