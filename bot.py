@@ -77,10 +77,10 @@ def run_flask():
 def to_ist(utc_time):
     return utc_time + timedelta(hours=5, minutes=30)
 
-# Format time in IST (24-hour format)
+# Format time in IST (12-hour format with AM/PM)
 def format_ist(utc_time):
     ist_time = to_ist(utc_time)
-    return ist_time.strftime("%Y-%m-%d %H:%M:%S")
+    return ist_time.strftime("%Y-%m-%d %I:%M:%S %p")
 
 # Format time left
 def format_time_left(expiry):
@@ -842,46 +842,12 @@ async def confirm_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         
         async for user in users:
             try:
-                if broadcast_data['type'] == 'text':
-                    await context.bot.send_message(
-                        chat_id=user['user_id'],
-                        text=broadcast_data['content'],
-                        parse_mode=broadcast_data.get('parse_mode', None)
-                    )
-                elif broadcast_data['type'] == 'photo':
-                    await context.bot.send_photo(
-                        chat_id=user['user_id'],
-                        photo=broadcast_data['content'],
-                        caption=broadcast_data.get('caption', ''),
-                        parse_mode=broadcast_data.get('parse_mode', None)
-                    )
-                elif broadcast_data['type'] == 'video':
-                    await context.bot.send_video(
-                        chat_id=user['user_id'],
-                        video=broadcast_data['content'],
-                        caption=broadcast_data.get('caption', ''),
-                        parse_mode=broadcast_data.get('parse_mode', None)
-                    )
-                elif broadcast_data['type'] == 'document':
-                    await context.bot.send_document(
-                        chat_id=user['user_id'],
-                        document=broadcast_data['content'],
-                        caption=broadcast_data.get('caption', ''),
-                        parse_mode=broadcast_data.get('parse_mode', None)
-                    )
-                elif broadcast_data['type'] == 'sticker':
-                    await context.bot.send_sticker(
-                        chat_id=user['user_id'],
-                        sticker=broadcast_data['content']
-                    )
-                else:
-                    # Fallback to text
-                    await context.bot.send_message(
-                        chat_id=user['user_id'],
-                        text="📢 New broadcast from admin!",
-                        parse_mode='HTML'
-                    )
-                
+                # Forward the original message to each user
+                await context.bot.forward_message(
+                    chat_id=user['user_id'],
+                    from_chat_id=broadcast_data['chat_id'],
+                    message_id=broadcast_data['message_id']
+                )
                 sent_count += 1
                 
                 # Update progress every 20 messages
@@ -894,6 +860,29 @@ async def confirm_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                 # Respect Telegram rate limits (30 messages/second)
                 await asyncio.sleep(0.1)
                     
+            except BadRequest as e:
+                if "chat not found" in str(e).lower() or "user is deactivated" in str(e).lower():
+                    # User blocked the bot or deleted account
+                    failed_count += 1
+                    continue
+                else:
+                    # Other errors, try to send a copy instead
+                    try:
+                        if broadcast_data.get('text'):
+                            await context.bot.send_message(
+                                chat_id=user['user_id'],
+                                text=broadcast_data['text'],
+                                parse_mode=broadcast_data.get('parse_mode'),
+                                entities=broadcast_data.get('entities')
+                            )
+                            sent_count += 1
+                        else:
+                            # For media messages, we'll need to handle them differently
+                            failed_count += 1
+                            logger.error(f"Could not forward media message to {user['user_id']}: {e}")
+                    except Exception as inner_e:
+                        logger.error(f"Broadcast failed to {user['user_id']}: {str(inner_e)}")
+                        failed_count += 1
             except Exception as e:
                 logger.error(f"Broadcast failed to {user['user_id']}: {str(e)}")
                 failed_count += 1
@@ -939,62 +928,55 @@ async def handle_broadcast_message(update: Update, context: ContextTypes.DEFAULT
     if user_id not in BROADCAST_STATE or BROADCAST_STATE[user_id]['state'] != 'waiting_message':
         return
         
-    # Process different message types
-    broadcast_data = {}
+    # Store the original message with all its properties
+    message = update.message
+    broadcast_data = {
+        'type': 'message',
+        'message_id': message.message_id,
+        'chat_id': message.chat_id,
+        'has_media': any([message.photo, message.video, message.document, message.sticker]),
+        'text': message.text or message.caption,
+        'parse_mode': 'HTML' if (message.text_html or message.caption_html) else None,
+        'entities': message.entities or message.caption_entities
+    }
     
-    if update.message.text:
-        broadcast_data['type'] = 'text'
-        broadcast_data['content'] = update.message.text_html if update.message.text_html else update.message.text
-        broadcast_data['parse_mode'] = 'HTML'
-    elif update.message.photo:
-        broadcast_data['type'] = 'photo'
-        broadcast_data['content'] = update.message.photo[-1].file_id  # Highest resolution
-        broadcast_data['caption'] = update.message.caption_html if update.message.caption_html else update.message.caption
-        broadcast_data['parse_mode'] = 'HTML'
-    elif update.message.video:
-        broadcast_data['type'] = 'video'
-        broadcast_data['content'] = update.message.video.file_id
-        broadcast_data['caption'] = update.message.caption_html if update.message.caption_html else update.message.caption
-        broadcast_data['parse_mode'] = 'HTML'
-    elif update.message.document:
-        broadcast_data['type'] = 'document'
-        broadcast_data['content'] = update.message.document.file_id
-        broadcast_data['caption'] = update.message.caption_html if update.message.caption_html else update.message.caption
-        broadcast_data['parse_mode'] = 'HTML'
-    elif update.message.sticker:
-        broadcast_data['type'] = 'sticker'
-        broadcast_data['content'] = update.message.sticker.file_id
-    else:
-        await update.message.reply_text("⚠️ Unsupported message type for broadcast. Please send text or media.")
-        return
-        
     # Save broadcast message and update state
     BROADCAST_STATE[user_id] = {
         'state': 'ready',
         'message': broadcast_data
     }
     
-    # Preview the broadcast
+    # Create a better preview
     preview_text = (
         "📢 <b>Broadcast Preview</b>\n\n"
-        "This is how your message will appear to users:\n\n"
+        "This message will be sent to all users exactly as shown below:\n\n"
     )
     
-    if broadcast_data['type'] == 'text':
-        preview_text += broadcast_data['content']
-    elif broadcast_data['type'] == 'sticker':
-        preview_text += "🎴 <i>Sticker will be sent</i>"
-    else:
-        preview_text += f"<b>Type:</b> {broadcast_data['type'].capitalize()}\n"
-        if broadcast_data.get('caption'):
-            preview_text += f"<b>Caption:</b>\n{broadcast_data['caption']}"
+    if message.text:
+        preview_text += message.text_html if message.text_html else html.escape(message.text)
+    elif message.caption:
+        preview_text += message.caption_html if message.caption_html else html.escape(message.caption)
     
     preview_text += "\n\nUse /confirm_broadcast to send or /cancel_broadcast to abort."
     
-    await update.message.reply_text(
-        preview_text,
-        parse_mode='HTML'
-    )
+    # Try to forward the message as a preview
+    try:
+        await context.bot.forward_message(
+            chat_id=user_id,
+            from_chat_id=message.chat_id,
+            message_id=message.message_id
+        )
+        await update.message.reply_text(
+            preview_text,
+            parse_mode='HTML'
+        )
+    except Exception as e:
+        logger.error(f"Could not forward message: {e}")
+        await update.message.reply_text(
+            "⚠️ Could not create a proper preview, but the message has been saved.\n\n"
+            "Use /confirm_broadcast to send or /cancel_broadcast to abort.",
+            parse_mode='HTML'
+        )
 
 # Premium management commands
 async def add_premium(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1011,7 +993,7 @@ async def add_premium(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await update.message.reply_text(
             "ℹ️ Usage:\n"
             "/add <username/userid/reply> <duration>\n"
-            "Durations: 1hr, 1day, 1month, 1year\n\n"
+            "Durations: 1hr, 2day, 3month, 1year, etc.\n\n"
             "Example: /add @username 1month\n"
             "          /add 123456789 1year\n"
             "          Reply to a user and use /add 1day"
@@ -1049,20 +1031,25 @@ async def add_premium(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                     target_user_id = user_data["user_id"]
                     target_fullname = f"{user_data.get('first_name', '')} {user_data.get('last_name', '')}".strip()
     
-    # Get duration
+    # Get duration - flexible format (1hr, 2day, 3month, etc.)
     duration_str = context.args[-1].lower()
     duration_map = {
-        "1hr": timedelta(hours=1),
-        "1day": timedelta(days=1),
-        "1month": timedelta(days=30),
-        "1year": timedelta(days=365)
+        "hr": timedelta(hours=1),
+        "hour": timedelta(hours=1),
+        "day": timedelta(days=1),
+        "month": timedelta(days=30),
+        "year": timedelta(days=365)
     }
     
-    if duration_str not in duration_map:
-        await update.message.reply_text("❌ Invalid duration. Use: 1hr, 1day, 1month, 1year")
+    # Parse duration string (e.g., "2hr", "3day", "1month")
+    match = re.match(r'^(\d+)(hr|hour|day|month|year)s?$', duration_str)
+    if not match:
+        await update.message.reply_text("❌ Invalid duration format. Use: 2hr, 3day, 1month, 1year")
         return
     
-    duration = duration_map[duration_str]
+    amount = int(match.group(1))
+    unit = match.group(2)
+    duration = duration_map[unit] * amount
     
     if target_user_id is None:
         await update.message.reply_text("❌ User not found. Please make sure the user has interacted with the bot.")
@@ -1072,7 +1059,7 @@ async def add_premium(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     now = datetime.utcnow()
     expiry_date = now + duration
     
-    # Format dates for IST display (24-hour format)
+    # Format dates for IST display (12-hour format with AM/PM)
     join_date_ist = format_ist(now)
     expiry_date_ist = format_ist(expiry_date)
     
@@ -1085,7 +1072,7 @@ async def add_premium(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 "start_date": now,
                 "expiry_date": expiry_date,
                 "added_by": update.effective_user.id,
-                "plan": duration_str
+                "plan": f"{amount}{unit}"
             }},
             upsert=True
         )
@@ -1102,7 +1089,7 @@ async def add_premium(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                     f"👋 ʜᴇʏ {target_fullname},\n"
                     "ᴛʜᴀɴᴋ ʏᴏᴜ ꜰᴏʀ ᴘᴜʀᴄʜᴀꜱɪɴɢ ᴘʀᴇᴍɪᴜᴍ.\n"
                     "ᴇɴᴊᴏʏ !! ✨🎉\n\n"
-                    f"⏰ ᴘʀᴇᴍɪᴜᴍ ᴀᴄᴄᴇꜱꜱ : {duration_str}\n"
+                    f"⏰ ᴘʀᴇᴍɪᴜᴍ ᴀᴄᴄᴇꜱꜱ : {amount}{unit}\n"
                     f"⏳ ᴊᴏɪɴɪɴɢ ᴅᴀᴛᴇ : {join_date_ist} IST\n"
                     f"⌛️ ᴇxᴘɪʀʏ ᴅᴀᴛᴇ : {expiry_date_ist} IST"
                 )
@@ -1115,7 +1102,7 @@ async def add_premium(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             "ᴘʀᴇᴍɪᴜᴍ ᴀᴅᴅᴇᴅ ꜱᴜᴄᴄᴇꜱꜱꜰᴜʟʟʏ ✅\n\n"
             f"👤 ᴜꜱᴇʀ : {target_fullname}\n"
             f"⚡ ᴜꜱᴇʀ ɪᴅ : `{target_user_id}`\n"
-            f"⏰ ᴘʀᴇᴍɪᴜᴍ ᴀᴄᴄᴇꜱꜱ : {duration_str}\n\n"
+            f"⏰ ᴘʀᴇᴍɪᴜᴍ ᴀᴄᴄᴇꜱꜱ : {amount}{unit}\n\n"
             f"⏳ ᴊᴏɪɴɪɴɢ ᴅᴀᴛᴇ : {join_date_ist} IST\n"
             f"⌛️ ᴇxᴘɪʀʏ ᴅᴀᴛᴇ : {expiry_date_ist} IST",
             parse_mode='Markdown'
@@ -1225,8 +1212,15 @@ async def list_premium(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 async def my_plan_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await record_user_interaction(update)
-    user = update.effective_user
-    user_id = user.id
+    
+    # Check if we're in a callback context
+    if update.callback_query:
+        query = update.callback_query
+        user_id = query.from_user.id
+        message = query.message
+    else:
+        user_id = update.effective_user.id
+        message = update.message
     
     # Check if user is premium
     if not await is_premium(user_id):
@@ -1237,19 +1231,19 @@ async def my_plan_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await update.message.reply_text(
-            "🔒 You don't have an active premium plan.\n\n"
-            "Upgrade to premium for unlimited quiz creation and other benefits!",
-            reply_markup=reply_markup,
-            parse_mode='Markdown'
-        )
+        response_text = "🔒 You don't have an active premium plan.\n\nUpgrade to premium for unlimited quiz creation and other benefits!"
+        
+        if update.callback_query:
+            await query.edit_message_text(response_text, reply_markup=reply_markup, parse_mode='Markdown')
+        else:
+            await message.reply_text(response_text, reply_markup=reply_markup, parse_mode='Markdown')
         return
     
     # Get premium details
     if DB is not None:
         premium_data = await DB.premium_users.find_one({"user_id": user_id})
         if premium_data:
-            # Format dates in IST (24-hour format)
+            # Format dates in IST (12-hour format with AM/PM)
             start_date = format_ist(premium_data["start_date"])
             expiry_date = format_ist(premium_data["expiry_date"])
             time_left = format_time_left(premium_data["expiry_date"])
@@ -1257,7 +1251,7 @@ async def my_plan_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             
             response = (
                 "⚜️ ᴘʀᴇᴍɪᴜᴍ ᴜꜱᴇʀ ᴅᴀᴛᴀ :\n\n"
-                f"👤 ᴜꜱᴇʀ : {premium_data.get('full_name', user.full_name)}\n"
+                f"👤 ᴜꜱᴇʀ : {premium_data.get('full_name', update.effective_user.full_name)}\n"
                 f"⚡ ᴜꜱᴇʀ ɪᴅ : `{user_id}`\n"
                 f"⏰ ᴘʀᴇᴍɪᴜᴍ ᴘʟᴀɴ : {plan_name}\n\n"
                 f"⏱️ ᴊᴏɪɴɪɴɢ ᴅᴀᴛᴇ : {start_date} IST\n"
@@ -1265,17 +1259,18 @@ async def my_plan_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 f"⏳ ᴛɪᴍᴇ ʟᴇꜰᴛ : {time_left}"
             )
             
-            await update.message.reply_text(
-                response,
-                parse_mode='Markdown'
-            )
+            if update.callback_query:
+                await query.edit_message_text(response, parse_mode='Markdown')
+            else:
+                await message.reply_text(response, parse_mode='Markdown')
             return
     
     # Fallback if data not found
-    await update.message.reply_text(
-        "⚠️ Could not retrieve your premium information. Please contact support.",
-        parse_mode='Markdown'
-    )
+    response_text = "⚠️ Could not retrieve your premium information. Please contact support."
+    if update.callback_query:
+        await query.edit_message_text(response_text, parse_mode='Markdown')
+    else:
+        await message.reply_text(response_text, parse_mode='Markdown')
 
 # Button handler
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1285,7 +1280,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if query.data == "premium_plans":
         await plan_command(update, context)
     elif query.data == "my_plan":
-        await my_plan_command(update, context)
+        # Use the message from the callback query instead of update.message
+        if hasattr(update, 'message'):
+            await my_plan_command(update, context)
+        else:
+            # Create a fake update with message for callback context
+            fake_update = Update(update.update_id, message=query.message)
+            await my_plan_command(fake_update, context)
 
 # Optimized token validation with caching
 async def has_valid_token(user_id):
