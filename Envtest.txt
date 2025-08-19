@@ -1,0 +1,6 @@
+BOT_USERNAME=auto_join_approval_fast_bot
+DAILY_QUIZ_LIMIT=25
+MONGO_URI="mongodb+srv://mrrkumar0186:ABq9ww8096Dg45i3@cluster0.aadbh9j.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
+OWNER_ID=7456681709
+PORT=10000
+TELEGRAM_TOKEN=7573448964:AAGiGh0OoQhJGGpCoVsTx_fCXueg0DNhNGU
