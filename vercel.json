@@ -1,7 +1,7 @@
 {
   "functions": {
-    "api/webhook.py": {
-      "runtime": "python3.9"
+    "api/webhook.js": {
+      "runtime": "nodejs18.x"
     }
   }
 }
