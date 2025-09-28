@@ -492,8 +492,38 @@ async def create_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         parse_mode='Markdown'
     )
 
+def preprocess_content(content: str) -> str:
+    """Preprocess content to handle various text formats"""
+    # Normalize line endings
+    content = content.replace('\r\n', '\n').replace('\r', '\n')
+    
+    # Handle numbered questions (1., 2., etc.)
+    content = re.sub(r'^\d+\.\s*', '', content, flags=re.MULTILINE)
+    
+    # Handle bullet points
+    content = re.sub(r'^[•\-*]\s*', '', content, flags=re.MULTILINE)
+    
+    # Remove extra blank lines but keep question separators
+    content = re.sub(r'\n\s*\n', '\n\n', content)
+    
+    # Trim whitespace from each line
+    lines = [line.strip() for line in content.split('\n')]
+    
+    # Remove empty lines at start and end
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    
+    return '\n'.join(lines)
+
 def parse_quiz_file(content: str) -> tuple:
-    """Optimized quiz parser"""
+    """Robust quiz parser that handles different text formats"""
+    # Normalize line endings and clean up content
+    content = content.replace('\r\n', '\n').replace('\r', '\n')  # Convert all line endings to \n
+    content = re.sub(r'\n\s*\n', '\n\n', content)  # Normalize multiple blank lines
+    content = content.strip()  # Remove leading/trailing whitespace
+    
     blocks = content.split('\n\n')
     valid_questions = []
     errors = []
@@ -502,32 +532,80 @@ def parse_quiz_file(content: str) -> tuple:
         if not block.strip():
             continue
             
-        lines = block.split('\n')
-        # Fast validation
-        if len(lines) < 6 or len(lines) > 7:
-            errors.append(f"❌ Question {i}: Invalid line count ({len(lines)})")
-            continue
-            
-        # Process lines
-        question = lines[0].strip()
-        options = [line.strip() for line in lines[1:5]]
-        answer_line = lines[5].strip()
+        lines = [line.strip() for line in block.split('\n') if line.strip()]
         
-        # Answer validation
-        if not answer_line.lower().startswith('answer:'):
-            errors.append(f"❌ Q{i}: Missing 'Answer:' prefix")
+        # More flexible validation - allow 5-7 lines per question block
+        if len(lines) < 5:
+            errors.append(f"❌ Question {i}: Too few lines ({len(lines)}), need at least 5")
             continue
             
+        if len(lines) > 7:
+            errors.append(f"❌ Question {i}: Too many lines ({len(lines)}), maximum 7 allowed")
+            continue
+        
+        # Extract components with flexible parsing
+        question = lines[0]
+        
+        # Find options (next 4 non-empty lines or until answer line)
+        options = []
+        option_lines = []
+        
+        for line in lines[1:]:
+            # Stop if we find an answer line
+            if line.lower().startswith('answer:'):
+                break
+            option_lines.append(line)
+        
+        # Take first 4 lines as options
+        if len(option_lines) >= 4:
+            options = option_lines[:4]
+        else:
+            errors.append(f"❌ Q{i}: Need exactly 4 options, found {len(option_lines)}")
+            continue
+        
+        # Find answer line
+        answer_line = None
+        explanation = None
+        
+        for j, line in enumerate(lines):
+            if line.lower().startswith('answer:'):
+                answer_line = line
+                # Check if there's an explanation after the answer
+                if j + 1 < len(lines):
+                    explanation = lines[j + 1]
+                break
+        
+        if not answer_line:
+            errors.append(f"❌ Q{i}: Missing 'Answer:' line")
+            continue
+        
+        # Parse answer number
         try:
-            answer_num = int(answer_line.split(':', 1)[1].strip())
+            answer_text = answer_line.split(':', 1)[1].strip()
+            # Handle various answer formats: "1", "A", "a", "B)", etc.
+            if answer_text.isdigit():
+                answer_num = int(answer_text)
+            else:
+                # Handle letter answers: A=1, B=2, C=3, D=4
+                answer_char = answer_text.upper()[0]
+                if answer_char in 'ABCD':
+                    answer_num = ord(answer_char) - ord('A') + 1
+                else:
+                    raise ValueError(f"Invalid answer format: {answer_text}")
+            
             if not 1 <= answer_num <= 4:
                 errors.append(f"❌ Q{i}: Invalid answer number {answer_num}")
                 continue
-        except (ValueError, IndexError):
-            errors.append(f"❌ Q{i}: Malformed answer line")
+                
+        except (ValueError, IndexError, TypeError) as e:
+            errors.append(f"❌ Q{i}: Malformed answer line - {str(e)}")
             continue
-            
-        explanation = lines[6].strip() if len(lines) > 6 else None
+        
+        # Validate that explanation doesn't look like another question
+        if explanation and len(explanation.split()) > 10:
+            # If explanation is too long, it might be the next question
+            explanation = None
+        
         valid_questions.append((question, options, answer_num - 1, explanation))
     
     return valid_questions, errors
@@ -600,8 +678,9 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         content = await file.download_as_bytearray()
         content = content.decode('utf-8')
         
-        # Parse and validate
-        valid_questions, errors = parse_quiz_file(content)
+        # Preprocess and parse
+        processed_content = preprocess_content(content)
+        valid_questions, errors = parse_quiz_file(processed_content)
         
         # For non-premium users, enforce daily limit
         if not is_prem and valid_questions:
